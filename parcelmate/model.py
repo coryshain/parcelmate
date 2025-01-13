@@ -19,19 +19,20 @@ def get_model_and_tokenizer(model_name):
     return model, tokenizer
 
 
-def get_timecourses(model, input_ids, attention_mask, batch_size=8, verbose=True, **kwargs):
+def get_timecourses(model, input_ids, attention_mask, batch_size=8, verbose=True, indent=0, **kwargs):
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     model = model.to(device)
     if verbose:
-        stderr('Getting timecourses\n')
+        stderr('%sGetting timecourses\n' % (' ' * indent))
     timecourses = None
     coordinates = None
     t = 0
     T = int(attention_mask.detach().numpy().sum())
     B = int(math.ceil(input_ids.size(0) / batch_size))
+    indent += 2
     for i in range(0, input_ids.size(0), batch_size):
         if verbose:
-            stderr('\r  Batch %d/%d' % (i // batch_size + 1, B))
+            stderr('\r%sBatch %d/%d' % (' ' * indent, i // batch_size + 1, B))
         _input_ids = input_ids[i:i + batch_size].to(device)
         _attention_mask = attention_mask[i:i + batch_size].to(device)
         states = model(
@@ -76,16 +77,21 @@ def get_connectivity(timecourses, n_components=None):
     return R
 
 
-def dump_connectivity(connectivity, path, coordinates=None):
+def save_connectivity(connectivity, path, coordinates=None, verbose=True, indent=0):
     dirpath = os.path.dirname(path)
     if not os.path.exists(dirpath):
         os.makedirs(dirpath)
+    if verbose:
+        stderr('%sSaving connectivity to %s\n' % (' ' * indent, path))
     with h5py.File(path, 'w') as f:
         f.create_dataset('connectivity', data=connectivity)
-        f.create_dataset('coordinates', data=coordinates)
+        if coordinates is not None:
+            f.create_dataset('coordinates', data=coordinates)
 
 
-def read_connectivity(path, coordinates=None):
+def load_connectivity(path, coordinates=None, verbose=True, indent=0):
+    if verbose:
+        stderr('%sLoading connectivity from %s\n' % (' ' * indent, path))
     with h5py.File(path, 'r') as f:
         connectivity = f['connectivity'][:]
         if coordinates in f:
@@ -102,20 +108,22 @@ def read_connectivity(path, coordinates=None):
 def run_connectivity(
         model_name='gpt2',
         output_dir='results',
-        n_iterates=3,
+        n_samples=3,
         input_data_names=('wikitext', 'codeparrot'),
         seq_len=1024,
         n_tokens=None,
         split='train',
+        take=100000,
         wrap=True,
         shuffle=True,
         batch_size=8,
         n_components=None,
         eps=1e-3,
-        verbose=True,
         data_kwargs=None,
         model_kwargs=None,
-        overwrite=False
+        overwrite=False,
+        verbose=True,
+        indent=0
 ):
     if data_kwargs is None:
         data_kwargs = {}
@@ -126,7 +134,7 @@ def run_connectivity(
 
     connectivity_dir = os.path.join(output_dir, 'connectivity')
     if os.path.exists(os.path.join(connectivity_dir, 'finished.txt')) and not overwrite:
-        stderr('Connectivity already computed\n')
+        stderr('%sConnectivity already computed\n' % (' ' * indent))
         return
 
     model, tokenizer = get_model_and_tokenizer(model_name)
@@ -134,7 +142,12 @@ def run_connectivity(
     if isinstance(input_data_names, str):
         input_data_names = (input_data_names,)
 
+    indent = 0
+
     for _input_data_name in input_data_names:
+        if verbose:
+            stderr('%sRunning connectivity for %s\n' % (' ' * indent, _input_data_name))
+        indent += 2
         if _input_data_name == 'wikitext':
             input_data_kwargs = dict(
                 input_data='wikitext',
@@ -144,48 +157,93 @@ def run_connectivity(
         elif _input_data_name == 'codeparrot':
             input_data_kwargs = dict(
                 input_data='codeparrot/codeparrot-clean',
-                tokenizer=tokenizer,
+                tokenizer=tokenizer
             )
         else:
             raise ValueError('Unrecognized input data name: %s' % _input_data_name)
         input_data_kwargs.update(data_kwargs)
 
         input_ids, attention_mask = get_input_data(
-            n_tokens=n_tokens * n_iterates,
+            n_tokens=n_tokens * n_samples,
             split=split,
+            take=take,
             seq_len=seq_len,
             wrap=wrap,
             shuffle=shuffle,
             verbose=verbose,
+            indent=indent,
             **input_data_kwargs
         )
 
         if not os.path.exists(connectivity_dir):
             os.makedirs(connectivity_dir)
 
-        n = round(len(input_ids) // n_iterates)
-        R = []
+        if verbose:
+            stderr('%sQuerying model\n' % (' ' * indent))
+        n = int(np.ceil(len(input_ids) // n_samples))
+        connectivity = []
+        coordinates = None
+        indent += 2
         for i in range(0, len(input_ids), n):
+            if verbose:
+                stderr('%sSample %d/%d\n' % (' ' * indent, i // n + 1, n_samples))
             _input_ids = input_ids[i:i+n]
             _attention_mask = attention_mask[i:i+n]
 
-            out = get_timecourses(model, _input_ids, _attention_mask, batch_size=batch_size, **model_kwargs)
+            indent += 2
+
+            out = get_timecourses(
+                model,
+                _input_ids,
+                _attention_mask,
+                batch_size=batch_size,
+                verbose=verbose,
+                indent=indent,
+                **model_kwargs
+            )
             timecourses = out['timecourses']
             coordinates = out['coordinates']
-            _R = get_connectivity(timecourses, n_components=n_components)
-            R.append(_R)
-            if n_iterates > 1:
-                dump_connectivity(
-                    _R,
-                    os.path.join(connectivity_dir, 'R_%s_i%d.h5' % (_input_data_name, i // n + 1)),
-                    coordinates=coordinates
+            _timecourses = get_connectivity(timecourses, n_components=n_components)
+            connectivity.append(_timecourses)
+            if n_samples > 1:
+                save_connectivity(
+                    _timecourses,
+                    os.path.join(
+                        connectivity_dir,
+                        '%s_%s_%s%d%s' % (
+                            CONNECTIVITY_PREFIX,
+                            _input_data_name,
+                            SAMPLE_PREFIX,
+                            i // n + 1,
+                            EXTENSION
+                        )
+                    ),
+                    coordinates=coordinates,
+                    verbose=verbose,
+                    indent=indent
                 )
-        R = np.stack(R, axis=-1)
-        if n_iterates > 1:
-            R = fisher_average(R, eps=eps)
+            indent -= 2
+        indent -= 2
+        connectivity = np.stack(connectivity, axis=0)
+        if n_samples > 1:
+            connectivity = fisher_average(connectivity, eps=eps)
         else:
-            R = R[0]
-        dump_connectivity(R, os.path.join(connectivity_dir, 'R_%s_avg.h5' % _input_data_name))
+            connectivity = connectivity[0]
+        save_connectivity(
+            connectivity,
+            os.path.join(
+                connectivity_dir,
+                '%s_%s_avg%s' % (
+                    CONNECTIVITY_PREFIX,
+                    _input_data_name,
+                    EXTENSION
+                ),
+            ),
+            coordinates=coordinates,
+            verbose=verbose,
+            indent=indent
+        )
+        indent -= 2
 
     with open(os.path.join(connectivity_dir, 'finished.txt'), 'w') as f:
         f.write('Done\n')

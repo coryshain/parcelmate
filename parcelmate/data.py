@@ -10,16 +10,20 @@ def get_input_data(
         n_tokens,
         seq_len,
         split='train',
+        take=100000,
         wrap=True,
         shuffle=True,
         verbose=True,
+        indent=0,
         **kwargs
 ):
     if verbose:
-        stderr('Getting input data\n')
+        stderr('%sGetting input data\n' % (' ' * indent))
     assert seq_len > 0, 'seq_len must be positive'
     try:
         dataset = datasets.load_dataset(input_data, split=split, streaming=True, **kwargs)
+        if take:
+            dataset = dataset.take(take)
         key = None
         _dataset = []
         for input_data in dataset:
@@ -37,7 +41,7 @@ def get_input_data(
         assert split, 'split must be specified when loading a HuggingFace dataset'
     except (AssertionError, datasets.exceptions.DatasetNotFoundError):
         if kwargs:
-            stderr('WARNING: Unused keyword arguments: %s\n' % kwargs)
+            stderr('%sWARNING: Unused keyword arguments: %s\n' % (kwargs, ' ' * indent))
         if isinstance(input_data, str):
             dataset = [input_data]
         else:
@@ -47,8 +51,8 @@ def get_input_data(
     _n_tokens = 0
     input_ids = None
     attention_mask = None
-    for input_data in dataset:
-        toks = tokenizer(input_data)
+    for instance in dataset:
+        toks = tokenizer(instance)
         ids, mask = toks['input_ids'], toks['attention_mask']
         if _n_tokens + len(ids) > n_tokens:
             ids = ids[:n_tokens - _n_tokens]
@@ -84,6 +88,7 @@ def get_input_data(
             break
 
     assert n_tokens == _n_tokens, ('%d tokens requested but the dataset only contains %d tokens.'
+                                   ' Consider increasing the value of `take`.'
                                    % (n_tokens, _n_tokens))
 
     input_ids = torch.as_tensor(pad(input_ids))
