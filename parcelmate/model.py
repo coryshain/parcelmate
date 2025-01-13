@@ -177,7 +177,7 @@ def run_connectivity(
             if n_iterates > 1:
                 dump_connectivity(
                     _R,
-                    os.path.join(connectivity_dir, 'R_%s_i%d.obj' % (_input_data_name, i // n + 1)),
+                    os.path.join(connectivity_dir, 'R_%s_i%d.h5' % (_input_data_name, i // n + 1)),
                     coordinates=coordinates
                 )
         R = np.stack(R, axis=-1)
@@ -185,7 +185,7 @@ def run_connectivity(
             R = fisher_average(R, eps=eps)
         else:
             R = R[0]
-        dump_connectivity(R, os.path.join(connectivity_dir, 'R_%s_avg.obj' % _input_data_name))
+        dump_connectivity(R, os.path.join(connectivity_dir, 'R_%s_avg.h5' % _input_data_name))
 
     with open(os.path.join(connectivity_dir, 'finished.txt'), 'w') as f:
         f.write('Done\n')
