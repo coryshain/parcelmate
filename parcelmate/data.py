@@ -116,13 +116,11 @@ def correlate(X, rowvar=True):
 def fisher(arr, eps=1e-3):
     return np.arctanh((1 - eps) * arr)
 
-def fisher_average(*arrs, eps=1e-3):
-    out = None
-    for arr in arrs:
-        if out is None:
-            out = np.zeros(arr.shape, dtype=arr.dtype)
-        out += fisher(arr, eps=eps)
-    out /= len(arrs)
+def fisher_average(arrs, axis=0, eps=1e-3):
+    if isinstance(arrs, list):
+        arrs = np.stack(arrs, axis=axis)
+    out = fisher(arrs, eps=eps)
+    out = out.mean(axis=axis)
     out = np.tanh(out, dtype=out.dtype)
 
     return out

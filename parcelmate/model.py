@@ -2,7 +2,6 @@ import math
 import os
 import numpy as np
 import h5py
-import pickle
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
@@ -13,17 +12,20 @@ from parcelmate.constants import *
 from parcelmate.data import *
 from parcelmate.util import *
 
+
 def get_model_and_tokenizer(model_name):
     model = AutoModel.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
+
 
 def get_timecourses(model, input_ids, attention_mask, batch_size=8, verbose=True, **kwargs):
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     model = model.to(device)
     if verbose:
         stderr('Getting timecourses\n')
-    out = None
+    timecourses = None
+    coordinates = None
     t = 0
     T = int(attention_mask.detach().numpy().sum())
     B = int(math.ceil(input_ids.size(0) / batch_size))
@@ -40,19 +42,26 @@ def get_timecourses(model, input_ids, attention_mask, batch_size=8, verbose=True
         ).hidden_states
         mask = _attention_mask.detach().cpu().numpy().astype(bool)
         _t = int(mask.sum())
-        if out is None:
+        if timecourses is None:
             out_shape = (sum(x.shape[-1] for x in states), T)
-            out = np.zeros(out_shape, dtype=np.float32)
+            timecourses = np.zeros(out_shape, dtype=np.float32)
+        if coordinates is None:
+            coordinates = np.zeros((sum(x.shape[-1] for x in states),), dtype=np.int32)
         h = 0
         for state in states:
             _h = state.size(-1)
-            out[h:h + _h, t:t + _t] = state.detach().cpu().numpy()[mask].T
+            timecourses[h:h + _h, t:t + _t] = state.detach().cpu().numpy()[mask].T
+            coordinates[h:h + _h] = i // B
             h += _h
         t += _t
     if verbose:
         stderr('\n')
 
-    return out  # <n_neurons, n_tokens>
+    return dict(
+        timecourses=timecourses,  # <n_neurons, n_tokens>
+        coordinates=coordinates  # <n_neurons>
+    )
+
 
 def get_connectivity(timecourses, n_components=None):
     X = timecourses
@@ -66,16 +75,33 @@ def get_connectivity(timecourses, n_components=None):
 
     return R
 
-def dump_connectivity(R, outpath):
-    dirpath = os.path.dirname(outpath)
+
+def dump_connectivity(connectivity, path, coordinates=None):
+    dirpath = os.path.dirname(path)
     if not os.path.exists(dirpath):
         os.makedirs(dirpath)
-    with open(outpath, 'wb') as f:
-        pickle.dump(R, f)
+    with h5py.File(path, 'w') as f:
+        f.create_dataset('connectivity', data=connectivity)
+        f.create_dataset('coordinates', data=coordinates)
+
+
+def read_connectivity(path, coordinates=None):
+    with h5py.File(path, 'r') as f:
+        connectivity = f['connectivity'][:]
+        if coordinates in f:
+            coordinates = f['coordinates'][:]
+        else:
+            coordinates = None
+
+    return dict(
+        connectivity=connectivity,  # <n_neurons, n_neurons>
+        coordinates=coordinates  # <n_neurons>
+    )
+
 
 def run_connectivity(
         model_name='gpt2',
-        results_dir='results',
+        output_dir='results',
         n_iterates=3,
         input_data_names=('wikitext', 'codeparrot'),
         seq_len=1024,
@@ -88,7 +114,8 @@ def run_connectivity(
         eps=1e-3,
         verbose=True,
         data_kwargs=None,
-        model_kwargs=None
+        model_kwargs=None,
+        overwrite=False
 ):
     if data_kwargs is None:
         data_kwargs = {}
@@ -96,6 +123,11 @@ def run_connectivity(
         model_kwargs = {}
     if n_tokens is None:
         n_tokens = (N_TOKENS // (seq_len * batch_size)) * seq_len * batch_size
+
+    connectivity_dir = os.path.join(output_dir, 'connectivity')
+    if os.path.exists(os.path.join(connectivity_dir, 'finished.txt')) and not overwrite:
+        stderr('Connectivity already computed\n')
+        return
 
     model, tokenizer = get_model_and_tokenizer(model_name)
 
@@ -128,19 +160,32 @@ def run_connectivity(
             **input_data_kwargs
         )
 
+        if not os.path.exists(connectivity_dir):
+            os.makedirs(connectivity_dir)
+
         n = round(len(input_ids) // n_iterates)
         R = []
         for i in range(0, len(input_ids), n):
             _input_ids = input_ids[i:i+n]
             _attention_mask = attention_mask[i:i+n]
 
-            states = get_timecourses(model, _input_ids, _attention_mask, batch_size=batch_size, **model_kwargs)
-            _R = get_connectivity(states, n_components=n_components)
+            out = get_timecourses(model, _input_ids, _attention_mask, batch_size=batch_size, **model_kwargs)
+            timecourses = out['timecourses']
+            coordinates = out['coordinates']
+            _R = get_connectivity(timecourses, n_components=n_components)
             R.append(_R)
             if n_iterates > 1:
-                dump_connectivity(_R, os.path.join(results_dir, 'R_%s_i%d.obj' % (_input_data_name, i + 1)))
+                dump_connectivity(
+                    _R,
+                    os.path.join(connectivity_dir, 'R_%s_i%d.obj' % (_input_data_name, i // n + 1)),
+                    coordinates=coordinates
+                )
+        R = np.stack(R, axis=-1)
         if n_iterates > 1:
             R = fisher_average(R, eps=eps)
         else:
             R = R[0]
-        dump_connectivity(R, os.path.join(results_dir, 'R_%s_avg.obj' % _input_data_name))
+        dump_connectivity(R, os.path.join(connectivity_dir, 'R_%s_avg.obj' % _input_data_name))
+
+    with open(os.path.join(connectivity_dir, 'finished.txt'), 'w') as f:
+        f.write('Done\n')
