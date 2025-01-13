@@ -108,7 +108,7 @@ def correlate(X, rowvar=True):
     s = np.linalg.norm(X, axis=0, keepdims=True)
     np.subtract(X, m, out=X)
     np.divide(X, s, out=X)
-    R = np.zeros((k, k), dtype=np.float32)
+    R = np.zeros((k, k), dtype=X.dtype)
     R = np.dot(X.T, X, out=R)
 
     return R
@@ -116,14 +116,14 @@ def correlate(X, rowvar=True):
 def fisher(arr, eps=1e-3):
     return np.arctanh((1 - eps) * arr)
 
-def fisher_average(*arrs, eps=1e-3, dtype=np.float32):
+def fisher_average(*arrs, eps=1e-3):
     out = None
     for arr in arrs:
         if out is None:
-            out = np.zeros(arr.shape, dtype=dtype)
+            out = np.zeros(arr.shape, dtype=arr.dtype)
         out += fisher(arr, eps=eps)
     out /= len(arrs)
-    out = np.tanh(out, dtype=dtype)
+    out = np.tanh(out, dtype=out.dtype)
 
     return out
 

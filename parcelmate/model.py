@@ -42,7 +42,7 @@ def get_timecourses(model, input_ids, attention_mask, batch_size=8, verbose=True
         _t = int(mask.sum())
         if out is None:
             out_shape = (sum(x.shape[-1] for x in states), T)
-            out = np.zeros(out_shape, dtype=np.float16)
+            out = np.zeros(out_shape, dtype=np.float32)
         h = 0
         for state in states:
             _h = state.size(-1)
