@@ -49,10 +49,10 @@ def get_timecourses(model, input_ids, attention_mask, batch_size=8, verbose=True
         if coordinates is None:
             coordinates = np.zeros((sum(x.shape[-1] for x in states),), dtype=np.int32)
         h = 0
-        for state in states:
+        for s, state in enumerate(states):
             _h = state.size(-1)
             timecourses[h:h + _h, t:t + _t] = state.detach().cpu().numpy()[mask].T
-            coordinates[h:h + _h] = i // B
+            coordinates[h:h + _h] = s
             h += _h
         t += _t
     if verbose:
@@ -89,12 +89,12 @@ def save_connectivity(connectivity, path, coordinates=None, verbose=True, indent
             f.create_dataset('coordinates', data=coordinates)
 
 
-def load_connectivity(path, coordinates=None, verbose=True, indent=0):
+def load_connectivity(path, verbose=True, indent=0):
     if verbose:
         stderr('%sLoading connectivity from %s\n' % (' ' * indent, path))
     with h5py.File(path, 'r') as f:
         connectivity = f['connectivity'][:]
-        if coordinates in f:
+        if 'coordinates' in f:
             coordinates = f['coordinates'][:]
         else:
             coordinates = None
@@ -180,7 +180,7 @@ def run_connectivity(
 
         if verbose:
             stderr('%sQuerying model\n' % (' ' * indent))
-        n = int(np.ceil(len(input_ids) // n_samples))
+        n = int(np.ceil(len(input_ids) / n_samples))
         connectivity = []
         coordinates = None
         indent += 2
@@ -203,11 +203,11 @@ def run_connectivity(
             )
             timecourses = out['timecourses']
             coordinates = out['coordinates']
-            _timecourses = get_connectivity(timecourses, n_components=n_components)
-            connectivity.append(_timecourses)
+            _connectivity = get_connectivity(timecourses, n_components=n_components)
+            connectivity.append(_connectivity)
             if n_samples > 1:
                 save_connectivity(
-                    _timecourses,
+                    _connectivity,
                     os.path.join(
                         connectivity_dir,
                         '%s_%s_%s%d%s' % (
@@ -224,9 +224,8 @@ def run_connectivity(
                 )
             indent -= 2
         indent -= 2
-        connectivity = np.stack(connectivity, axis=0)
         if n_samples > 1:
-            connectivity = fisher_average(connectivity, eps=eps)
+            connectivity = fisher_average(*connectivity, eps=eps)
         else:
             connectivity = connectivity[0]
         save_connectivity(

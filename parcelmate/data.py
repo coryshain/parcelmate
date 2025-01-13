@@ -108,25 +108,24 @@ def pad(arr, max_len=None, pad_value=0, right=True):
 def correlate(X, rowvar=True):
     if rowvar:
         X = X.T
-    k = X.shape[1]
-    m = X.mean(axis=0, keepdims=True)
-    s = np.linalg.norm(X, axis=0, keepdims=True)
-    np.subtract(X, m, out=X)
-    np.divide(X, s, out=X)
-    R = np.zeros((k, k), dtype=X.dtype)
-    R = np.dot(X.T, X, out=R)
+    X -= X.mean(axis=0, keepdims=True)
+    X /= np.linalg.norm(X, axis=0, keepdims=True)
+    R = X.T @ X
 
     return R
 
 def fisher(arr, eps=1e-3):
-    return np.arctanh((1 - eps) * arr)
+    return np.arctanh(np.multiply(arr, 1 - eps, out=arr), out=arr)
 
-def fisher_average(arrs, axis=0, eps=1e-3):
-    if isinstance(arrs, list):
-        arrs = np.stack(arrs, axis=axis)
-    out = fisher(arrs, eps=eps)
-    out = out.mean(axis=axis)
-    out = np.tanh(out, dtype=out.dtype)
+def fisher_average(*arrs, eps=1e-3):
+    out = None
+    for arr in arrs:
+        if out is None:
+            out = fisher(arr, eps=eps)
+        else:
+            out += fisher(arr, eps=eps)
+    out /= len(arrs)
+    out = np.tanh(out, out=out)
 
     return out
 
