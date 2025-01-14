@@ -1,5 +1,6 @@
 import math
 import os
+import gc
 import numpy as np
 import h5py
 from sklearn.pipeline import Pipeline
@@ -57,6 +58,9 @@ def get_timecourses(model, input_ids, attention_mask, batch_size=8, verbose=True
         t += _t
     if verbose:
         stderr('\n')
+
+    model.to('cpu')
+    torch.cuda.empty_cache()
 
     return dict(
         timecourses=timecourses,  # <n_neurons, n_tokens>

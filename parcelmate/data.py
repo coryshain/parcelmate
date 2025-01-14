@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import torch
 import datasets
@@ -105,12 +106,40 @@ def pad(arr, max_len=None, pad_value=0, right=True):
         out = [[pad_value] * (max_len - len(x)) + x for x in arr]
     return out
 
-def correlate(X, rowvar=True):
+def correlate(X, rowvar=True, use_gpu=True):
     if rowvar:
         X = X.T
+    t = X.shape[0]
     X -= X.mean(axis=0, keepdims=True)
     X /= np.linalg.norm(X, axis=0, keepdims=True)
-    R = X.T @ X
+
+    if use_gpu:
+        X_ = torch.as_tensor(X)
+        n_bytes = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)
+        assert n_bytes > 0, 'No memory available on GPU'
+        assert n_bytes / 8 > t, 'Not enough GPU memory to compute correlation matrix'
+        k = int(n_bytes / (t * 8))
+        k = min(k, X.shape[1])
+        device = torch.device('cuda:0')
+        R = np.zeros((X.shape[1], X.shape[1]), dtype=X.dtype)
+        if k >= X.shape[1]:
+            # Can fit the whole array in GPU memory, in which case we can do this a little faster like below
+            X_.to(device)
+            R[:, :] = (X_.T @ X_).detach().cpu().numpy()
+            del X_
+        else:
+            X1 = torch.zeros([t, k], device=device)
+            X2 = torch.zeros([t, k], device=device)
+            for i in range(0, X.shape[1], k):
+                for j in range(0, X.shape[1], k):
+                    print(i, j, k)
+                    X1[:,:] = X_[:, i:i + k]
+                    X2[:,:] = X_[:, j:j + k]
+                    R[i:i + k, j:j + k] = (X1.T @ X2).detach().cpu().numpy()
+            del X1, X2
+        torch.cuda.empty_cache()
+    else:
+        R = X.T @ X
 
     return R
 
