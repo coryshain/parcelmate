@@ -151,6 +151,7 @@ def correlate(X, rowvar=True, use_gpu=True):
     if use_gpu:
         X_ = torch.as_tensor(X)
         n_bytes = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)
+        n_bytes *= 0.9  # Shrink allocation to avoid edge cases
         assert n_bytes > 0, 'No memory available on GPU'
         assert n_bytes / 8 > t, 'Not enough GPU memory to compute correlation matrix'
         k = int(n_bytes / (t * 8))
@@ -161,9 +162,13 @@ def correlate(X, rowvar=True, use_gpu=True):
         X2 = torch.zeros([t, k], device=device)
         for i in range(0, X.shape[1], k):
             for j in range(0, X.shape[1], k):
-                X1[:,:] = X_[:, i:i + k]
-                X2[:,:] = X_[:, j:j + k]
-                R[i:i + k, j:j + k] = (X1.T @ X2).detach().cpu().numpy()
+                ni = min(k, X.shape[1] - i)
+                nj = min(k, X.shape[1] - j)
+                _X1 = X1[:, :ni]
+                _X2 = X2[:, :nj]
+                _X1[:,:] = X_[:, i:i + k]
+                _X2[:,:] = X_[:, j:j + k]
+                R[i:i + k, j:j + k] = (_X1.T @ _X2).detach().cpu().numpy()
         del X1, X2
         torch.cuda.empty_cache()
     else:
