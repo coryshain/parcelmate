@@ -3,8 +3,7 @@ import torch
 import argparse
 
 from parcelmate.cfg import get_cfg
-from parcelmate.data import get_input_data
-from parcelmate.model import run_connectivity
+from parcelmate.model import *
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser('''Main executable for parcelmate package.''')
@@ -20,5 +19,9 @@ if __name__ == '__main__':
         output_dir=cfg.get('output_dir', 'results'),
         overwrite=overwrite,
         **cfg.get('connectivity', {})
+    )
+
+    check_stability(
+        output_dir=cfg.get('output_dir', 'results')
     )
 

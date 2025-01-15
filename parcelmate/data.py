@@ -5,8 +5,48 @@ import datasets
 
 from parcelmate.util import stderr
 
-def get_input_data(
-        input_data,
+
+class BaselineDataset:
+    def __init__(self, dataset_type, seq_len, tokenizer=None):
+        assert dataset_type in ('whitespace', 'random'), 'Unknown dataset type: %s' % dataset_type
+        self.dataset_type = dataset_type
+        self.seq_len = seq_len
+        self.tokenizer = tokenizer
+        if self.dataset_type == 'random':
+            assert self.tokenizer is not None, 'Tokenizer must be provided for random dataset type'
+            tokens = self.tokenizer.get_vocab()
+            special_tokens = set(self.tokenizer.all_special_tokens)
+            tokens = [tokens[x] for x in tokens if not x in special_tokens]
+            self.tokens = tokens
+        else:
+            self.tokens = {}
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.dataset_type == 'whitespace':
+            text = ' ' * self.seq_len
+        elif self.dataset_type == 'random':
+            toks = np.random.choice(self.tokens, size=self.seq_len, replace=True)
+            text = self.tokenizer.decode(toks)
+        else:
+            raise ValueError('Unknown dataset type: %s' % self.dataset_type)
+        return text
+
+    def take(self, n):
+        out = []
+        print()
+        for i in range(n):
+            print('\r%d' % i)
+            out.append(next(self))
+        print()
+        out = [next(self) for _ in range(n)]
+        return out
+
+
+def get_dataset(
+        dataset,
         tokenizer,
         n_tokens,
         seq_len,
@@ -21,33 +61,28 @@ def get_input_data(
     if verbose:
         stderr('%sGetting input data\n' % (' ' * indent))
     assert seq_len > 0, 'seq_len must be positive'
-    try:
-        dataset = datasets.load_dataset(input_data, split=split, streaming=True, **kwargs)
+
+    if dataset in ('whitespace', 'random'):
+        dataset = BaselineDataset(dataset, seq_len, tokenizer=tokenizer)
+    else:
+        dataset = datasets.load_dataset(dataset, split=split, streaming=True, **kwargs)
         if take:
             dataset = dataset.take(take)
         key = None
         _dataset = []
-        for input_data in dataset:
+        for instance in dataset:
             if key is None:
-                if 'text' in input_data:
+                if 'text' in instance:
                     key = 'text'
-                elif 'content' in input_data:
+                elif 'content' in instance:
                     key = 'content'
                 else:
                     raise ValueError('no known content key found in dataset')
-            _dataset.append(input_data[key])
+            _dataset.append(instance[key])
         dataset = _dataset
-        if shuffle:
+        if shuffle and take:
             np.random.shuffle(dataset)
         assert split, 'split must be specified when loading a HuggingFace dataset'
-    except (AssertionError, datasets.exceptions.DatasetNotFoundError):
-        if kwargs:
-            stderr('%sWARNING: Unused keyword arguments: %s\n' % (kwargs, ' ' * indent))
-        if isinstance(input_data, str):
-            dataset = [input_data]
-        else:
-            dataset = input_data
-        assert isinstance(dataset, list), 'x must be a string or list of strings'
 
     _n_tokens = 0
     input_ids = None
@@ -122,21 +157,14 @@ def correlate(X, rowvar=True, use_gpu=True):
         k = min(k, X.shape[1])
         device = torch.device('cuda:0')
         R = np.zeros((X.shape[1], X.shape[1]), dtype=X.dtype)
-        if k >= X.shape[1]:
-            # Can fit the whole array in GPU memory, in which case we can do this a little faster like below
-            X_.to(device)
-            R[:, :] = (X_.T @ X_).detach().cpu().numpy()
-            del X_
-        else:
-            X1 = torch.zeros([t, k], device=device)
-            X2 = torch.zeros([t, k], device=device)
-            for i in range(0, X.shape[1], k):
-                for j in range(0, X.shape[1], k):
-                    print(i, j, k)
-                    X1[:,:] = X_[:, i:i + k]
-                    X2[:,:] = X_[:, j:j + k]
-                    R[i:i + k, j:j + k] = (X1.T @ X2).detach().cpu().numpy()
-            del X1, X2
+        X1 = torch.zeros([t, k], device=device)
+        X2 = torch.zeros([t, k], device=device)
+        for i in range(0, X.shape[1], k):
+            for j in range(0, X.shape[1], k):
+                X1[:,:] = X_[:, i:i + k]
+                X2[:,:] = X_[:, j:j + k]
+                R[i:i + k, j:j + k] = (X1.T @ X2).detach().cpu().numpy()
+        del X1, X2
         torch.cuda.empty_cache()
     else:
         R = X.T @ X
