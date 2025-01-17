@@ -2,13 +2,12 @@ import math
 import os
 import copy
 import numpy as np
-import pandas as pd
 import h5py
-from matplotlib import pyplot as plt
-import seaborn as sns
+from scipy import optimize
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, FastICA
+from sklearn.cluster import MiniBatchKMeans
 import torch
 from transformers import AutoModel, AutoTokenizer
 
@@ -23,7 +22,18 @@ def get_model_and_tokenizer(model_name):
     return model, tokenizer
 
 
-def get_timecourses(model, input_ids, attention_mask, batch_size=8, verbose=True, indent=0, **kwargs):
+def get_timecourses(
+        model,
+        input_ids,
+        attention_mask,
+        batch_size=8,
+        highpass=None,
+        lowpass=None,
+        step=0.2,
+        verbose=True,
+        indent=0,
+        **kwargs
+):
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     model = model.to(device)
     if verbose:
@@ -55,7 +65,12 @@ def get_timecourses(model, input_ids, attention_mask, batch_size=8, verbose=True
         h = 0
         for s, state in enumerate(states):
             _h = state.size(-1)
-            timecourses[h:h + _h, t:t + _t] = state.detach().cpu().numpy()[mask].T
+            timecourses[h:h + _h, t:t + _t] = bandpass(
+                state.detach().cpu().numpy()[mask].T,
+                step=step,
+                lower=highpass,
+                upper=lowpass
+            )
             coordinates[h:h + _h] = s
             h += _h
         t += _t
@@ -84,32 +99,207 @@ def get_connectivity(timecourses, n_components=None):
     return R
 
 
-def save_connectivity(connectivity, path, coordinates=None, verbose=True, indent=0):
+def save_h5_data(
+        data,
+        path,
+        verbose=True,
+        indent=0
+):
     dirpath = os.path.dirname(path)
     if not os.path.exists(dirpath):
         os.makedirs(dirpath)
     if verbose:
-        stderr('%sSaving connectivity to %s\n' % (' ' * indent, path))
+        stderr('%sSaving to %s\n' % (' ' * indent, path))
     with h5py.File(path, 'w') as f:
-        f.create_dataset('connectivity', data=connectivity)
-        if coordinates is not None:
-            f.create_dataset('coordinates', data=coordinates)
+        for key in data:
+            f.create_dataset(key, data=data[key])
 
 
-def load_connectivity(path, verbose=True, indent=0):
+def load_h5_data(path, verbose=True, indent=0):
     if verbose:
-        stderr('%sLoading connectivity from %s\n' % (' ' * indent, path))
+        stderr('%sLoading from %s\n' % (' ' * indent, path))
+    out = {}
     with h5py.File(path, 'r') as f:
-        connectivity = f['connectivity'][:]
-        if 'coordinates' in f:
-            coordinates = f['coordinates'][:]
-        else:
-            coordinates = None
+        for key in f.keys():
+            out[key] = f[key][:]
+
+    return out
+
+
+def sample_parcellations(
+        connectivity,
+        n_networks=50,
+        n_samples=100,
+        binarize_connectivity=True,
+        n_components_pca=200,
+        n_components_ica=None,
+        clustering_kwargs=None,
+        verbose=True,
+        indent=0
+):
+    if verbose:
+        stderr('%sSampling (n_networks=%d)\n' % (' ' * indent, n_networks))
+    indent += 2
+
+    if clustering_kwargs is None:
+        clustering_kwargs = {}
+    X = connectivity
+    if binarize_connectivity:
+        X = (X > np.quantile(X, 0.9, axis=1)).astype(int)
+    if n_components_pca:
+        n_components = n_components_pca
+        if n_components == 'auto':
+            n_components = n_networks - 1
+        if verbose:
+            stderr('%sPCA transforming (n components = %s)' % (' ' * indent, n_components))
+        t1 = time.time()
+        n_components = min(n_components, X.shape[-1])
+        m = PCA(n_components=n_components, svd_solver='auto', whiten=True)
+        X = m.fit_transform(X)
+        stderr(' (%0.2fs)\n' % (time.time() - t1))
+    if n_components_ica:
+        n_components = n_components_ica
+        if n_components == 'auto':
+            n_components = n_networks - 1
+        n_components = min(n_components, X.shape[-1])
+        if verbose:
+            stderr('%sICA transforming (n components = %s)' % (' ' * indent, n_components))
+        t1 = time.time()
+        m = FastICA(n_components=n_components, whiten='unit-variance')
+        X = m.fit_transform(X)
+        stderr(' (%0.2fs)\n' % (time.time() - t1))
+
+    if verbose:
+        stderr('%sDrawing samples\n' % (' ' * indent))
+    indent += 2
+    n_units = X.shape[0]
+    samples = np.zeros((n_samples, n_units))
+    scores = np.zeros(n_samples)
+    for i in range(n_samples):
+        if verbose and n_samples > 1:
+            stderr('\r%sSample %d/%d' % (' ' * indent, i + 1, n_samples))
+        m = MiniBatchKMeans(n_clusters=n_networks, **clustering_kwargs)
+        _sample = m.fit_predict(X)
+        _score = m.inertia_
+        samples[i, :] = _sample
+        scores[i] = _score
+
+    if n_samples > 1:
+        stderr('\n')
 
     return dict(
-        connectivity=connectivity,  # <n_neurons, n_neurons>
-        coordinates=coordinates  # <n_neurons>
+        samples=samples,  # <n_samples, n_units>
+        scores=scores  # <n_samples>
     )
+
+
+def _align_samples(
+        samples,
+        w=None,
+        n_alignments=None,
+        shuffle=False,
+        greedy=True,
+        verbose=True,
+        indent=0
+):
+    if w is None:
+        _w = 1
+    else:
+        _w = w[0]
+    n_samples = samples.shape[0]
+    n_units = samples.shape[1]
+    n_networks = samples.max() + 1
+    reference = (samples[0][None, ...] == np.arange(n_networks)[..., None]).astype(float)
+    parcellation = None
+    C = 0
+
+    # Align subsequent samples
+    if shuffle:
+        s_ix = np.random.permutation(n_samples)
+        samples = samples[s_ix]
+    n = n_alignments
+    if n is None:
+        n = n_samples
+    i = 0
+    for i_cum in range(n):
+        if verbose:
+            stderr('\r%sAlignment %d/%d' % (' ' * indent, i_cum + 1, n))
+
+        if w is not None:
+            _w = w[i]
+        else:
+            _w = 1
+        if _w == 0:
+            continue
+
+        if len(samples.shape) == 2:
+            s = (samples[i][None, ...] == np.arange(n_networks)[..., None])
+        else:
+            s = samples[i].T
+        s = s.astype(float)
+        _reference = standardize_array(reference)
+        _s = standardize_array(s)
+        scores = np.dot(
+            _reference,
+            _s.T,
+        ) / n_units
+
+        _, ix_r = optimize.linear_sum_assignment(scores, maximize=True)
+        s = s[ix_r]
+        if parcellation is None:
+            parcellation = s * _w
+        else:
+            parcellation = parcellation + s * _w
+        if greedy:
+            reference = parcellation
+        C += _w
+        i += 1
+        if i >= n_samples:
+            i = 0
+            if shuffle:
+                s_ix = np.random.permutation(n_samples)
+                samples = samples[s_ix]
+
+    if verbose and n > 0:
+        stderr('\n')
+
+    parcellation = parcellation / C
+
+    return parcellation
+
+def align_samples(
+        samples,
+        scores,
+        n_alignments=None,
+        weight_samples=False,
+        verbose=True,
+        indent=0
+):
+    if verbose:
+        stderr('%sAligning samples\n' % (' ' * indent))
+    indent += 1
+
+    s_ix = np.argsort(scores)
+    samples = samples[s_ix]
+    scores = scores[s_ix]
+    if weight_samples:
+        w = 1 - scores  # Flip to upweight lower inertia
+    else:
+        w = None
+
+    parcellation = _align_samples(
+        samples,
+        w=w,
+        n_alignments=n_alignments,
+        shuffle=False,
+        greedy=True,
+        verbose=verbose,
+        indent=indent + 2
+    ).T
+
+    indent -= 1
+
+    return parcellation
 
 
 def run_connectivity(
@@ -124,6 +314,9 @@ def run_connectivity(
         wrap=True,
         shuffle=True,
         batch_size=8,
+        highpass=None,
+        lowpass=None,
+        step=0.2,
         n_components=None,
         eps=1e-3,
         data_kwargs=None,
@@ -139,7 +332,7 @@ def run_connectivity(
     if n_tokens is None:
         n_tokens = (N_TOKENS // (seq_len * batch_size)) * seq_len * batch_size
 
-    connectivity_dir = os.path.join(output_dir, CONNECTIVITY_DIR)
+    connectivity_dir = os.path.join(output_dir, CONNECTIVITY_NAME)
     if os.path.exists(os.path.join(connectivity_dir, 'finished.txt')) and not overwrite:
         stderr('%sConnectivity already computed\n' % (' ' * indent))
         return
@@ -226,6 +419,9 @@ def run_connectivity(
                 _input_ids,
                 _attention_mask,
                 batch_size=batch_size,
+                highpass=highpass,
+                lowpass=lowpass,
+                step=step,
                 verbose=verbose,
                 indent=indent,
                 **model_kwargs
@@ -239,19 +435,21 @@ def run_connectivity(
             _connectivity = get_connectivity(timecourses, n_components=n_components_)
             connectivity.append(_connectivity)
             if n_samples > 1:
-                save_connectivity(
-                    _connectivity,
+                save_h5_data(
+                    dict(
+                        connectivity=_connectivity,
+                        coordinates=coordinates
+                    ),
                     os.path.join(
                         connectivity_dir,
                         '%s_%s_%s%d%s' % (
-                            CONNECTIVITY_PREFIX,
+                            CONNECTIVITY_NAME,
                             domain,
-                            SAMPLE_PREFIX,
+                            SAMPLE_NAME,
                             i // n + 1,
                             EXTENSION
                         )
                     ),
-                    coordinates=coordinates,
                     verbose=verbose,
                     indent=indent
                 )
@@ -263,17 +461,19 @@ def run_connectivity(
             connectivity = fisher_average(*connectivity, eps=eps)
         else:
             connectivity = connectivity[0]
-        save_connectivity(
-            connectivity,
+        save_h5_data(
+            dict(
+                connectivity=connectivity,
+                coordinates=coordinates
+            ),
             os.path.join(
                 connectivity_dir,
                 '%s_%s_avg%s' % (
-                    CONNECTIVITY_PREFIX,
+                    CONNECTIVITY_NAME,
                     domain,
                     EXTENSION
                 ),
             ),
-            coordinates=coordinates,
             verbose=verbose,
             indent=indent
         )
@@ -282,103 +482,65 @@ def run_connectivity(
     with open(os.path.join(connectivity_dir, 'finished.txt'), 'w') as f:
         f.write('Done\n')
 
-def check_stability(
+
+
+def run_parcellation(
         output_dir='results',
+        n_networks=50,
+        n_samples=100,
+        binarize_connectivity=True,
+        n_components_pca=None,
+        n_components_ica=None,
+        clustering_kwargs=None,
+        n_alignments=None,
+        weight_samples=False,
+        overwrite=False,
         verbose=True,
         indent=0
 ):
-    connectivity_dir = os.path.join(output_dir, CONNECTIVITY_DIR)
-    stability_dir = os.path.join(output_dir, STABILITY_DIR)
+    connectivity_dir = os.path.join(output_dir, CONNECTIVITY_NAME)
 
-    samples_by_domain = {}
-    averages_by_domain = {}
     for path in os.listdir(connectivity_dir):
         match = INPUT_NAME_RE.match(path)
-        if match:
-            domain = match.group(1)
-        else:
+        if not match:
             continue
-        key = match.group(2)
-        if key == 'avg':
-            R_by_domain = averages_by_domain
-        else:
-            key = int(key[len(SAMPLE_PREFIX):])
-            R_by_domain = samples_by_domain
-        if not domain in R_by_domain:
-            R_by_domain[domain] = {}
-        filepath = os.path.join(connectivity_dir, path)
-        data = load_connectivity(filepath, verbose=verbose, indent=indent)
-        R = data['connectivity']
-        R_by_domain[domain][key] = R
+        inpath = os.path.join(connectivity_dir, path)
+        data = load_h5_data(inpath, verbose=verbose, indent=indent)
 
-    for domain in samples_by_domain:
-        n = len(samples_by_domain[domain])
-        R = np.zeros((n, n))
-        labels = sorted(list(samples_by_domain[domain].keys()))
-        for i, key1 in enumerate(labels):
-            if key1 == 'avg':
-                continue
-            R1 = samples_by_domain[domain][key1]
-            ix = np.tril_indices(R1.shape[0], k=-1)
-            R1 = R1[ix]
-            for j, key2 in enumerate(labels):
-                if key2 == 'avg':
-                    continue
-                R2 = samples_by_domain[domain][key2]
-                R2 = R2[ix]
-                R[i, j] = np.corrcoef(R1, R2)[0, 1]
+        if overwrite or not 'parcellation' in data:
+            R = np.nan_to_num(data['connectivity'])
+            R = np.abs(R)
 
-        R = pd.DataFrame(R, index=labels, columns=labels)
+            sample = sample_parcellations(
+                R,
+                n_networks=n_networks,
+                n_samples=n_samples,
+                binarize_connectivity=binarize_connectivity,
+                n_components_pca=n_components_pca,
+                n_components_ica=n_components_ica,
+                clustering_kwargs=clustering_kwargs,
+                verbose=verbose,
+                indent=indent + 2
+            )
+            parcellation = align_samples(
+                sample['samples'],
+                sample['scores'],
+                n_alignments=n_alignments,
+                weight_samples=weight_samples,
+                verbose=verbose,
+                indent=indent + 2
+            )
+            data['parcellation'] = parcellation
 
-        if not os.path.exists(stability_dir):
-            os.makedirs(stability_dir)
+            save_h5_data(
+                data,
+                inpath,
+                verbose=verbose,
+                indent=indent + 2
+            )
 
-        filepath = os.path.join(stability_dir, 'withindomains_%s.png' % domain)
-        ax = sns.heatmap(
-            R,
-            cmap='coolwarm',
-            vmin=-1,
-            vmax=1,
-            xticklabels=True,
-            yticklabels=True,
-            annot=True
-        )
-        fig = ax.get_figure()
-        fig.savefig(filepath, dpi=150)
-        plt.close('all')
 
-    labels = sorted(list(averages_by_domain.keys()))
-    n = len(labels)
-    R = np.zeros((n, n))
-    for i, domain1 in enumerate(labels):
-        R1 = averages_by_domain[domain1]['avg']
-        ix = np.tril_indices(R1.shape[0], k=-1)
-        R1 = R1[ix]
-        for j, domain2 in enumerate(labels):
-            R2 = averages_by_domain[domain2]['avg']
-            R2 = R2[ix]
-            R[i, j] = np.corrcoef(R1, R2)[0, 1]
 
-    R = pd.DataFrame(R, index=labels, columns=labels)
-
-    if not os.path.exists(stability_dir):
-        os.makedirs(stability_dir)
-
-    filepath = os.path.join(stability_dir, 'between_domains.png')
-    ax = sns.heatmap(
-        R,
-        cmap='coolwarm',
-        vmin=-1,
-        vmax=1,
-        xticklabels=True,
-        yticklabels=True,
-        annot=True
-    )
-    ax.tick_params(axis='x', rotation=45)
-    fig = ax.get_figure()
-    fig.tight_layout()
-    fig.savefig(filepath, dpi=150)
-    plt.close('all')
 
 
 

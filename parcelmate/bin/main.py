@@ -1,9 +1,8 @@
-import numpy as np
-import torch
 import argparse
 
 from parcelmate.cfg import get_cfg
 from parcelmate.model import *
+from parcelmate.plot import *
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser('''Main executable for parcelmate package.''')
@@ -15,13 +14,28 @@ if __name__ == '__main__':
     overwrite = args.overwrite
 
     cfg = get_cfg(config)
+
     run_connectivity(
         output_dir=cfg.get('output_dir', 'results'),
         overwrite=overwrite,
         **cfg.get('connectivity', {})
     )
 
-    check_stability(
+    run_parcellation(
+        output_dir=cfg.get('output_dir', 'results'),
+        overwrite=overwrite,
+        **cfg.get('parcellation', {})
+    )
+
+    plot_connectivity(
+        output_dir=cfg.get('output_dir', 'results')
+    )
+
+    plot_parcellation(
+        output_dir=cfg.get('output_dir', 'results')
+    )
+
+    plot_stability(
         output_dir=cfg.get('output_dir', 'results')
     )
 

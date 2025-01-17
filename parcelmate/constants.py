@@ -1,10 +1,14 @@
 import re
 
-N_TOKENS = 1000000
-CONNECTIVITY_PREFIX = 'R'
-SAMPLE_PREFIX = 'sample'
-EXTENSION = '.h5'
-INPUT_NAME_RE = re.compile('%s_(.+)_(%s\d+|avg)%s' % (CONNECTIVITY_PREFIX, SAMPLE_PREFIX, EXTENSION))
+CONNECTIVITY_NAME = 'connectivity'
+PARCELLATION_NAME = 'parcellation'
+STABILITY_NAME = 'stability'
+SAMPLE_NAME = 'sample'
 
-CONNECTIVITY_DIR = 'connectivity'
-STABILITY_DIR = 'stability'
+N_TOKENS = 1000000
+EXTENSION = '.h5'
+INPUT_NAME_RE = re.compile('(%s|%s)_(.+)_(%s\d+|avg)%s' % (
+    CONNECTIVITY_NAME, PARCELLATION_NAME, SAMPLE_NAME, EXTENSION)
+)
+
+PLOT_DIR = 'plots'

@@ -1,5 +1,6 @@
 import time
 import numpy as np
+from scipy import signal
 import torch
 import datasets
 
@@ -132,6 +133,7 @@ def get_dataset(
 
     return input_ids, attention_mask
 
+
 def pad(arr, max_len=None, pad_value=0, right=True):
     if max_len is None:
         max_len = max(len(x) for x in arr)
@@ -140,6 +142,53 @@ def pad(arr, max_len=None, pad_value=0, right=True):
     else:
         out = [[pad_value] * (max_len - len(x)) + x for x in arr]
     return out
+
+
+def standardize_array(arr, axis=-1):
+    out = (arr - arr.mean(axis=axis, keepdims=True)) / arr.std(axis=axis, keepdims=True)
+    out = np.where(np.isfinite(out), out, np.zeros_like(out))
+
+    return out
+
+
+def minmax_normalize_array(arr, axis=None):
+    out = arr - arr.min(axis=axis, keepdims=True)
+    out = out / out.max(axis=axis, keepdims=True)
+    out = np.where(np.isfinite(out), out, np.zeros_like(out))
+
+    return out
+
+
+def get_bandpass_filter(step=None, lower=None, upper=None, order=5):
+    assert lower is not None or upper is not None, 'At least one of the lower (hi-pass) or upper (lo-pass) ' + \
+                                                   'parameters must be provided.'
+    assert step is not None, 'step must be provided.'
+    fs = 1 / step
+    Wn = []
+    btype = None
+    if lower is not None:
+        Wn.append(lower)
+        btype = 'highpass'
+    if upper is not None:
+        Wn.append(upper)
+        if btype is None:
+            btype = 'lowpass'
+        else:
+            btype = 'bandpass'
+    if len(Wn) == 1:
+        Wn = Wn[0]
+
+    return signal.butter(order, Wn, fs=fs, btype=btype)
+
+
+def bandpass(arr, step=None, lower=None, upper=None, order=5, axis=-1):
+    if (lower is None and upper is None) or step is None:
+        return arr
+    b, a = get_bandpass_filter(step=step, lower=lower, upper=upper, order=order)
+    out = signal.lfilter(b, a, arr, axis=axis)
+
+    return out
+
 
 def correlate(X, rowvar=True, use_gpu=True):
     if rowvar:
@@ -176,8 +225,10 @@ def correlate(X, rowvar=True, use_gpu=True):
 
     return R
 
+
 def fisher(arr, eps=1e-3):
     return np.arctanh(np.multiply(arr, 1 - eps, out=arr), out=arr)
+
 
 def fisher_average(*arrs, eps=1e-3):
     out = None
