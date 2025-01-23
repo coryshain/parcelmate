@@ -2,7 +2,6 @@ import math
 import os
 import copy
 import numpy as np
-import h5py
 from scipy import optimize
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -14,10 +13,83 @@ from transformers import AutoModel, AutoTokenizer
 from parcelmate.constants import *
 from parcelmate.data import *
 from parcelmate.util import *
+from parcelmate.plot import *
 
 
-def get_model_and_tokenizer(model_name):
+class KnockoutModel(torch.nn.Module):
+    def __init__(self, model, knockout_probs, knockout_coordinates, knockout_thresh=0.5, *args, **kwargs):
+        super(KnockoutModel, self).__init__(*args, **kwargs)
+        self.model = model
+        if len(knockout_probs.shape) == 1:
+            knockout_probs = knockout_probs[..., None]
+        self.knockout_probs = knockout_probs
+        self.knockout_coordinates = knockout_coordinates
+        self.knockout_thresh=knockout_thresh
+
+        layers_attr = 'h'
+        layer_indices = np.unique(knockout_coordinates)
+        layers = getattr(self.model, layers_attr)
+        knockout_mask = {}
+        for l_ix in range(len(layer_indices)):
+            if l_ix == 0:
+                key = 'embedding'
+            else:
+                key = l_ix - 1 # Shifted down bc of embedding layer
+            sel = knockout_coordinates == l_ix
+            inv_mask = None
+            for ix in range(knockout_probs.shape[1]):
+                inv_mask_ = knockout_probs[sel, ix] > self.knockout_thresh
+                if inv_mask is None:
+                    inv_mask = inv_mask_
+                else:
+                    inv_mask |= inv_mask_
+
+            mask = ~inv_mask
+            mask = torch.nn.Parameter(
+                torch.as_tensor(
+                    mask[None, None, ...]  # Binarize and add batch and time dims
+                ),
+                requires_grad=False
+            )
+            knockout_mask[key] = mask
+
+        self.knockout_mask = knockout_mask
+
+        self.model.drop = KnockoutLayer(self.model.drop, self.knockout_mask['embedding'])
+        for ix in range(len(layers)):
+            layers[ix] = KnockoutLayer(layers[ix], self.knockout_mask[ix])
+
+    def forward(self, *args, **kwargs):
+        out = self.model.forward(*args, **kwargs)
+        return out
+
+
+class KnockoutLayer(torch.nn.Module):
+    def __init__(self, layer, knockout_mask=None, *args, **kwargs):
+        super(KnockoutLayer, self).__init__(*args, **kwargs)
+        self.layer = layer
+        self.knockout_mask = knockout_mask
+
+    def forward(self, *args, **kwargs):
+        out = self.layer.forward(*args, **kwargs)
+        if self.knockout_mask is not None:
+            if isinstance(out, torch.Tensor):
+                out *= self.knockout_mask
+            else:
+                out = (out[0] * self.knockout_mask,) + out[1:]
+
+        return out
+
+
+def get_model_and_tokenizer(model_name, knockout_probs=None, knockout_coordinates=None, knockout_thresh=0.5):
     model = AutoModel.from_pretrained(model_name)
+    if knockout_probs is not None:
+        model = KnockoutModel(
+            model,
+            knockout_probs=knockout_probs,
+            knockout_coordinates=knockout_coordinates,
+            knockout_thresh=knockout_thresh
+        )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
 
@@ -30,6 +102,8 @@ def get_timecourses(
         highpass=None,
         lowpass=None,
         step=0.2,
+        timecourse_pca_components=None,
+        timecourse_ica_components=None,
         verbose=True,
         indent=0,
         **kwargs
@@ -80,8 +154,35 @@ def get_timecourses(
     model.to('cpu')
     torch.cuda.empty_cache()
 
+    if timecourse_pca_components:
+        t = timecourses.shape[-1]
+        n_components = min(timecourse_pca_components, t)
+        if verbose:
+            stderr('%sPCA transforming (n components = %s)' % (' ' * indent, n_components))
+        t1 = time.time()
+        n_components = min(n_components, t)
+        m = Pipeline([
+            ('scaler', StandardScaler()),
+            ('pca', PCA(n_components=n_components, svd_solver='auto', whiten=True))
+        ])
+        timecourses = m.fit_transform(timecourses)
+        stderr(' (%0.2fs)\n' % (time.time() - t1))
+    if timecourse_ica_components:
+        t = timecourses.shape[-1]
+        n_components = min(timecourse_ica_components, t)
+        n_components = min(n_components, t)
+        if verbose:
+            stderr('%sICA transforming (n components = %s)' % (' ' * indent, n_components))
+        t1 = time.time()
+        m = Pipeline([
+            ('scaler', StandardScaler()),
+            ('ica', FastICA(n_components=n_components, whiten='unit-variance'))
+        ])
+        timecourses = m.fit_transform(timecourses)
+        stderr(' (%0.2fs)\n' % (time.time() - t1))
+
     return dict(
-        timecourses=timecourses,  # <n_neurons, n_tokens>
+        timecourses=timecourses,  # <n_neurons, n_tokens/n_components>
         coordinates=coordinates  # <n_neurons>
     )
 
@@ -99,40 +200,13 @@ def get_connectivity(timecourses, n_components=None):
     return R
 
 
-def save_h5_data(
-        data,
-        path,
-        verbose=True,
-        indent=0
-):
-    dirpath = os.path.dirname(path)
-    if not os.path.exists(dirpath):
-        os.makedirs(dirpath)
-    if verbose:
-        stderr('%sSaving to %s\n' % (' ' * indent, path))
-    with h5py.File(path, 'w') as f:
-        for key in data:
-            f.create_dataset(key, data=data[key])
-
-
-def load_h5_data(path, verbose=True, indent=0):
-    if verbose:
-        stderr('%sLoading from %s\n' % (' ' * indent, path))
-    out = {}
-    with h5py.File(path, 'r') as f:
-        for key in f.keys():
-            out[key] = f[key][:]
-
-    return out
-
-
 def sample_parcellations(
         connectivity,
         n_networks=50,
         n_samples=100,
         binarize_connectivity=True,
-        n_components_pca=200,
-        n_components_ica=None,
+        connectivity_pca_components=200,
+        connectivity_ica_components=None,
         clustering_kwargs=None,
         verbose=True,
         indent=0
@@ -146,8 +220,8 @@ def sample_parcellations(
     X = connectivity
     if binarize_connectivity:
         X = (X > np.quantile(X, 0.9, axis=1)).astype(int)
-    if n_components_pca:
-        n_components = n_components_pca
+    if connectivity_pca_components:
+        n_components = connectivity_pca_components
         if n_components == 'auto':
             n_components = n_networks - 1
         if verbose:
@@ -157,8 +231,8 @@ def sample_parcellations(
         m = PCA(n_components=n_components, svd_solver='auto', whiten=True)
         X = m.fit_transform(X)
         stderr(' (%0.2fs)\n' % (time.time() - t1))
-    if n_components_ica:
-        n_components = n_components_ica
+    if connectivity_ica_components:
+        n_components = connectivity_ica_components
         if n_components == 'auto':
             n_components = n_networks - 1
         n_components = min(n_components, X.shape[-1])
@@ -267,6 +341,7 @@ def _align_samples(
 
     return parcellation
 
+
 def align_samples(
         samples,
         scores,
@@ -304,8 +379,8 @@ def align_samples(
 
 def run_connectivity(
         model_name='gpt2',
-        output_dir='results',
-        n_samples=3,
+        output_dir=OUTPUT_DIR,
+        n_samples=N_SAMPLES,
         domains=('wikitext', 'bookcorpus', 'agnews', 'tldr17', 'codeparrot', 'random', 'whitespace'),
         seq_len=1024,
         n_tokens=None,
@@ -317,10 +392,13 @@ def run_connectivity(
         highpass=None,
         lowpass=None,
         step=0.2,
-        n_components=None,
+        timecourse_pca_components=None,
+        timecourse_ica_components=None,
         eps=1e-3,
         data_kwargs=None,
         model_kwargs=None,
+        knockout_filepath=None,
+        knockout_thresh=0.5,
         overwrite=False,
         verbose=True,
         indent=0
@@ -333,16 +411,23 @@ def run_connectivity(
         n_tokens = (N_TOKENS // (seq_len * batch_size)) * seq_len * batch_size
 
     connectivity_dir = os.path.join(output_dir, CONNECTIVITY_NAME)
-    if os.path.exists(os.path.join(connectivity_dir, 'finished.txt')) and not overwrite:
-        stderr('%sConnectivity already computed\n' % (' ' * indent))
-        return
 
-    model, tokenizer = get_model_and_tokenizer(model_name)
+    knockout_probs = knockout_coordinates = None
+    if knockout_filepath is not None:
+        data = load_h5_data(knockout_filepath, verbose=verbose, indent=indent)
+        assert 'parcellation' in data, 'If provided, knockout_filepath must contain the field "parcellation"'
+        knockout_probs = data['parcellation']
+        knockout_coordinates = data['coordinates']
+
+    model, tokenizer = get_model_and_tokenizer(
+        model_name,
+        knockout_probs=knockout_probs,
+        knockout_coordinates=knockout_coordinates,
+        knockout_thresh=knockout_thresh
+    )
 
     if isinstance(domains, str):
         domains = (domains,)
-
-    indent = 0
 
     for domain in domains:
         if verbose:
@@ -405,51 +490,60 @@ def run_connectivity(
         connectivity = []
         coordinates = None
         indent += 2
+        new = False
         for i in range(0, len(input_ids), n):
             t0 = time.time()
+            filepath = os.path.join(
+                connectivity_dir,
+                '%s_%s_%s%d%s' % (
+                    CONNECTIVITY_NAME,
+                    domain,
+                    SAMPLE_NAME,
+                    i // n + 1,
+                    EXTENSION
+                )
+            )
             if verbose:
                 stderr('%sSample %d/%d\n' % (' ' * indent, i // n + 1, n_samples))
-            _input_ids = input_ids[i:i+n]
-            _attention_mask = attention_mask[i:i+n]
-
-            indent += 2
-
-            out = get_timecourses(
-                model,
-                _input_ids,
-                _attention_mask,
-                batch_size=batch_size,
-                highpass=highpass,
-                lowpass=lowpass,
-                step=step,
-                verbose=verbose,
-                indent=indent,
-                **model_kwargs
-            )
-            timecourses = out['timecourses']
-            coordinates = out['coordinates']
-            if n_components:
-                n_components_ = min(n_components, timecourses.shape[1])
+            if os.path.exists(filepath) and not overwrite:
+                out = load_h5_data(filepath, verbose=False)
             else:
-                n_components_ = None
-            _connectivity = get_connectivity(timecourses, n_components=n_components_)
+                out = {}
+            indent += 2
+            if 'connectivity' not in out or 'coordinates' not in out:
+                _input_ids = input_ids[i:i+n]
+                _attention_mask = attention_mask[i:i+n]
+                out = get_timecourses(
+                    model,
+                    _input_ids,
+                    _attention_mask,
+                    batch_size=batch_size,
+                    highpass=highpass,
+                    lowpass=lowpass,
+                    step=step,
+                    timecourse_pca_components=timecourse_pca_components,
+                    timecourse_ica_components=timecourse_ica_components,
+                    verbose=verbose,
+                    indent=indent,
+                    **model_kwargs
+                )
+                timecourses = out['timecourses']
+                coordinates = out['coordinates']
+                _connectivity = get_connectivity(timecourses)
+                save = True
+                new = True
+            else:
+                _connectivity = out['connectivity']
+                coordinates = out['coordinates']
+                save = False
             connectivity.append(_connectivity)
-            if n_samples > 1:
+            if n_samples > 1 and save:
                 save_h5_data(
                     dict(
                         connectivity=_connectivity,
                         coordinates=coordinates
                     ),
-                    os.path.join(
-                        connectivity_dir,
-                        '%s_%s_%s%d%s' % (
-                            CONNECTIVITY_NAME,
-                            domain,
-                            SAMPLE_NAME,
-                            i // n + 1,
-                            EXTENSION
-                        )
-                    ),
+                    filepath,
                     verbose=verbose,
                     indent=indent
                 )
@@ -461,36 +555,39 @@ def run_connectivity(
             connectivity = fisher_average(*connectivity, eps=eps)
         else:
             connectivity = connectivity[0]
-        save_h5_data(
-            dict(
-                connectivity=connectivity,
-                coordinates=coordinates
+        filepath = os.path.join(
+            connectivity_dir,
+            '%s_%s_avg%s' % (
+                CONNECTIVITY_NAME,
+                domain,
+                EXTENSION
             ),
-            os.path.join(
-                connectivity_dir,
-                '%s_%s_avg%s' % (
-                    CONNECTIVITY_NAME,
-                    domain,
-                    EXTENSION
-                ),
-            ),
-            verbose=verbose,
-            indent=indent
         )
+        save = True
+        if os.path.exists(filepath) and not overwrite:
+            out = load_h5_data(filepath, verbose=False)
+            if 'connectivity' in out and 'coordinates' in out and not new:
+                save = False
+        if save:
+            save_h5_data(
+                dict(
+                    connectivity=connectivity,
+                    coordinates=coordinates
+                ),
+                filepath,
+                verbose=verbose,
+                indent=indent
+            )
         indent -= 2
-
-    with open(os.path.join(connectivity_dir, 'finished.txt'), 'w') as f:
-        f.write('Done\n')
-
 
 
 def run_parcellation(
-        output_dir='results',
+        output_dir=OUTPUT_DIR,
         n_networks=50,
         n_samples=100,
         binarize_connectivity=True,
-        n_components_pca=None,
-        n_components_ica=None,
+        connectivity_pca_components=None,
+        connectivity_ica_components=None,
         clustering_kwargs=None,
         n_alignments=None,
         weight_samples=False,
@@ -501,6 +598,7 @@ def run_parcellation(
     connectivity_dir = os.path.join(output_dir, CONNECTIVITY_NAME)
 
     for path in os.listdir(connectivity_dir):
+        t0 = time.time()
         match = INPUT_NAME_RE.match(path)
         if not match:
             continue
@@ -516,8 +614,8 @@ def run_parcellation(
                 n_networks=n_networks,
                 n_samples=n_samples,
                 binarize_connectivity=binarize_connectivity,
-                n_components_pca=n_components_pca,
-                n_components_ica=n_components_ica,
+                connectivity_pca_components=connectivity_pca_components,
+                connectivity_ica_components=connectivity_ica_components,
                 clustering_kwargs=clustering_kwargs,
                 verbose=verbose,
                 indent=indent + 2
@@ -539,8 +637,159 @@ def run_parcellation(
                 indent=indent + 2
             )
 
+            if verbose:
+                stderr('%sElapsed time: %.2f s\n' % (' ' * (indent + 2), time.time() - t0))
 
 
+def run_subnetwork_extraction(
+        output_dir=OUTPUT_DIR,
+        verbose=True,
+        indent=0
+):
+    connectivity_dir = os.path.join(output_dir, CONNECTIVITY_NAME)
+    subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
+
+    if verbose:
+        stderr('Extracting subnetworks\n')
+    indent += 2
+
+    parcellations = {}
+    coordinates = None
+    for path in os.listdir(connectivity_dir):
+        match = INPUT_NAME_RE.match(path)
+        if match and match.group(1) == CONNECTIVITY_NAME:
+            domain = match.group(2)
+        else:
+            continue
+        key = match.group(3)
+        if key != 'avg':
+            continue
+
+        filepath = os.path.join(connectivity_dir, path)
+        data = load_h5_data(filepath, verbose=verbose, indent=indent)
+        if 'parcellation' not in data:
+            continue
+        if coordinates is None:
+            coordinates = data['coordinates']
+        parcellations[domain] = data['parcellation']
+
+    shared_subnetworks = {}
+    domains = sorted(list(parcellations.keys()))
+    n_domains = len(domains)
+    for d1 in range(len(domains)):
+        domain1 = domains[d1]
+        for d2 in range(d1 + 1, len(domains)):
+            domain2 = domains[d2]
+            parcellation1 = parcellations[domain1].T  # <n_networks, n_units>
+            parcellation2 = parcellations[domain2].T  # <n_networks, n_units>
+            n_networks = parcellation1.shape[0]
+            n_units = parcellation1.shape[1]
+
+            _parcellation1 = standardize_array(parcellation1)
+            _parcellation2 = standardize_array(parcellation2)
+            scores = np.dot(
+                _parcellation1,
+                _parcellation2.T,
+            ) / n_units
+            alignment1 = np.argmax(scores, axis=1)
+            alignment2 = np.argmax(scores, axis=0)
+            matches = np.arange(n_networks) == alignment2[alignment1]
+            ix1 = np.arange(n_networks)[matches]
+            ix2 = alignment1[matches]
+            if domain1 not in shared_subnetworks:
+                shared_subnetworks[domain1] = {}
+            if domain2 not in shared_subnetworks:
+                shared_subnetworks[domain2] = {}
+            shared_subnetworks[domain1][domain2] = {int(x):int(y) for x, y in zip(ix1, ix2)}
+            shared_subnetworks[domain2][domain1] = {int(y):int(x) for x, y in zip(ix1, ix2)}
+
+    networks = []
+    for start in shared_subnetworks[domains[0]][domains[1]]:
+        d_ix = 0
+        n_ix = start
+        network = []
+        while d_ix < len(domains):
+            domain = domains[d_ix]
+            network.append(parcellations[domain][..., n_ix])
+            if d_ix < n_domains - 1 and n_ix in shared_subnetworks[domain][domains[d_ix + 1]]:
+                n_ix = shared_subnetworks[domain][domains[d_ix + 1]][n_ix]
+                d_ix += 1
+            else:
+                break
+
+        if len(network) == len(domains):
+            network = np.stack(network, axis=0).mean(axis=0)
+            networks.append(network)
+
+    networks = np.stack(networks, axis=1)
+
+    if not os.path.exists(subnetwork_dir):
+        os.makedirs(subnetwork_dir)
+
+    save_h5_data(
+        dict(
+            parcellation=networks,
+            coordinates=coordinates
+        ),
+        os.path.join(
+            subnetwork_dir,
+            '%s_%s_%s%s' % (
+                PARCELLATION_NAME,
+                'shared',
+                'avg',
+                EXTENSION
+            )
+        ),
+        verbose=verbose,
+        indent=indent
+    )
 
 
+def run_knockout(
+        output_dir=os.path.join(OUTPUT_DIR, KNOCKOUT_NAME),
+        model_name='gpt2',
+        connectivity_kwargs=None,
+        steps=('plot_stability',),
+        verbose=True,
+        indent=0
+):
+    if connectivity_kwargs is None:
+        connectivity_kwargs = {}
+    subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
+    knockout_dir = os.path.join(output_dir, 'knockout')
 
+    if verbose:
+        stderr('Running knockout\n')
+    indent += 2
+
+    if not os.path.exists(knockout_dir):
+        os.makedirs(knockout_dir)
+
+    for path in os.listdir(subnetwork_dir):
+        match = INPUT_NAME_RE.match(path)
+        if not match:
+            continue
+        knockout_filepath = os.path.join(subnetwork_dir, path)
+        data = load_h5_data(knockout_filepath, verbose=False)
+        if 'parcellation' not in data:
+            continue
+
+        run_connectivity(
+            model_name=model_name,
+            output_dir=knockout_dir,
+            knockout_filepath=knockout_filepath,
+            knockout_thresh=0.5,
+            verbose=verbose,
+            indent=indent,
+            **connectivity_kwargs
+        )
+
+        for step in steps:
+            if step == 'plot_stability':
+                plot_stability(
+                    output_dir=knockout_dir,
+                    verbose=verbose,
+                    indent=indent
+                )
+            else:
+                raise ValueError('Unrecognized step: %s' % step)
