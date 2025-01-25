@@ -6,19 +6,19 @@ from parcelmate.plot import *
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser('''Main executable for parcelmate package.''')
-    argparser.add_argument('-c', '--config', default=None, help='Path to config file.')
+    argparser.add_argument('config_path', nargs='?', default=None, help='Path to config file.')
     argparser.add_argument('-s', '--steps', nargs='+', default=['all'], help=
                            'Space-delimited list of steps to run, or `all`.'
                            )
     argparser.add_argument('-O', '--overwrite', action='store_true',
                            help='Recompute all outputs, even if they already exist.')
     args = argparser.parse_args()
-    config = args.config
+    config_path = args.config_path
     steps = set(args.steps)
     overwrite = args.overwrite
 
-    if config is not None:
-        cfg = get_cfg(config)
+    if config_path is not None:
+        cfg = get_cfg(config_path)
     else:
         cfg = {}
 
