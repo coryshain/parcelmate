@@ -9,6 +9,7 @@ from sklearn.decomposition import PCA, FastICA
 from sklearn.cluster import MiniBatchKMeans
 import torch
 from transformers import AutoModel, AutoTokenizer
+import random
 
 from parcelmate.constants import *
 from parcelmate.data import *
@@ -744,6 +745,16 @@ def run_subnetwork_extraction(
         indent=indent
     )
 
+def save_random_h5_data(filepath, random_units):
+    """
+    Saves a randomly selected subnetwork to an HDF5 file.
+
+    Args:
+        filepath (str): Path to save the HDF5 file.
+        random_units (list): List of randomly selected unit indices.
+    """
+    with h5py.File(filepath, 'w') as f:
+        f.create_dataset('parcellation', data=np.array(random_units, dtype=np.int32))
 
 def run_knockout(
         output_dir=os.path.join(OUTPUT_DIR, KNOCKOUT_NAME),
@@ -783,6 +794,33 @@ def run_knockout(
             indent=indent,
             **connectivity_kwargs
         )
+
+        # WILL NEED TO CHANGE TO GENERALIZE TO ALL MODELS
+        all_units = 12 * 768  # 12 layers, 768 units per layer = 9,216 total units
+
+        # Generate and process a random subnetwork of the same size
+        num_units = len(data['parcellation'])
+        random_subnetwork = random.sample(all_units, num_units)
+
+        # Save the random subnetwork to an HDF5 file
+        random_knockout_filepath = os.path.join(knockout_dir, f'random_{path}')
+        save_random_h5_data(random_knockout_filepath, random_subnetwork)
+
+        # Run connectivity analysis on the random subnetwork
+        run_connectivity(
+            model_name=model_name,
+            output_dir=knockout_dir,
+            knockout_filepath=random_knockout_filepath,
+            knockout_thresh=0.5,
+            verbose=verbose,
+            indent=indent,
+            **connectivity_kwargs
+        )
+
+        # After processing, delete the .h5 file of the random subnetwork
+        os.remove(knockout_filepath)
+        if verbose:
+            stderr(f"Deleted {knockout_filepath}\n")
 
         for step in steps:
             if step == 'plot_stability':
