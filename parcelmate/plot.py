@@ -5,8 +5,7 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 
 from parcelmate.constants import *
-from parcelmate.util import stderr
-from parcelmate.model import load_h5_data
+from parcelmate.util import stderr, load_h5_data
 
 
 def plot_connectivity(
@@ -65,55 +64,58 @@ def plot_parcellation(
         indent=0
 ):
     connectivity_dir = os.path.join(output_dir, CONNECTIVITY_NAME)
+    subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
     plot_dir = os.path.join(output_dir, PLOT_DIR, PARCELLATION_NAME)
 
     if verbose:
         stderr('Plotting parcellations\n')
     indent += 2
 
-    paths = os.listdir(connectivity_dir)
-    for path in paths:
-        match = INPUT_NAME_RE.match(path)
-        if match and match.group(1) == CONNECTIVITY_NAME:
-            domain = match.group(2)
-        else:
-            continue
-        key = match.group(3)
-        if key != 'avg':
-            continue
-        filepath = os.path.join(connectivity_dir, path)
-        data = load_h5_data(filepath, verbose=verbose, indent=indent)
-        if 'parcellation' not in data:
-            continue
-        parcellation = data['parcellation']
-        coordinates = data['coordinates']
-        counts_by_layer = {x: y for x, y in zip(*np.unique(coordinates, return_counts=True))}
-        layers = sorted(list(counts_by_layer.keys()))
-        n_layers = len(layers)
-        n_units = max(*counts_by_layer.values())
-        n_networks = parcellation.shape[-1]
-        for i in range(n_networks):
-            out = np.zeros((n_units, n_layers))
-            for j, layer in enumerate(layers):
-                sel = coordinates == layer
-                out[:, j] = parcellation[sel, i]
+    parents = (subnetwork_dir, connectivity_dir)
+    for parent in parents:
+        paths = os.listdir(parent)
+        for path in paths:
+            match = INPUT_NAME_RE.match(path)
+            if match and match.group(1) in (CONNECTIVITY_NAME, PARCELLATION_NAME):
+                domain = match.group(2)
+            else:
+                continue
+            key = match.group(3)
+            if key != 'avg':
+                continue
+            filepath = os.path.join(parent, path)
+            data = load_h5_data(filepath, verbose=verbose, indent=indent)
+            if 'parcellation' not in data:
+                continue
+            parcellation = data['parcellation']
+            coordinates = data['coordinates']
+            counts_by_layer = {x: y for x, y in zip(*np.unique(coordinates, return_counts=True))}
+            layers = sorted(list(counts_by_layer.keys()))
+            n_layers = len(layers)
+            n_units = max(*counts_by_layer.values())
+            n_networks = parcellation.shape[-1]
+            for i in range(n_networks):
+                out = np.zeros((n_units, n_layers))
+                for j, layer in enumerate(layers):
+                    sel = coordinates == layer
+                    out[:, j] = parcellation[sel, i]
 
-            if not os.path.exists(plot_dir):
-                os.makedirs(plot_dir)
+                if not os.path.exists(plot_dir):
+                    os.makedirs(plot_dir)
 
-            filepath = os.path.join(plot_dir, '%s_%s_network%d.png' % (PARCELLATION_NAME, domain, i + 1))
-            ax = sns.heatmap(
-                pd.DataFrame(out, index=range(n_units), columns=layers),
-                cmap='Blues',
-                vmin=0,
-                vmax=1,
-                xticklabels=True,
-                yticklabels=False,
-                annot=False,
-            )
-            fig = ax.get_figure()
-            fig.savefig(filepath, dpi=150)
-            plt.close('all')
+                filepath = os.path.join(plot_dir, '%s_%s_network%d.png' % (PARCELLATION_NAME, domain, i + 1))
+                ax = sns.heatmap(
+                    pd.DataFrame(out, index=range(n_units), columns=layers),
+                    cmap='Blues',
+                    vmin=0,
+                    vmax=1,
+                    xticklabels=True,
+                    yticklabels=False,
+                    annot=False,
+                )
+                fig = ax.get_figure()
+                fig.savefig(filepath, dpi=150)
+                plt.close('all')
 
 
 def plot_stability(
@@ -125,7 +127,7 @@ def plot_stability(
     plot_dir = os.path.join(output_dir, PLOT_DIR, STABILITY_NAME)
 
     if verbose:
-        stderr('Plotting stability\n')
+        stderr('%sPlotting stability\n' % (' ' * indent))
     indent += 2
 
     if not os.path.exists(plot_dir):
