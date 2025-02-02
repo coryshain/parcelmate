@@ -9,7 +9,9 @@ from sklearn.decomposition import PCA, FastICA
 from sklearn.cluster import MiniBatchKMeans
 import torch
 from transformers import AutoModel, AutoTokenizer
-import random
+import numpy as np
+import h5py
+import os
 
 from parcelmate.constants import *
 from parcelmate.data import *
@@ -745,17 +747,6 @@ def run_subnetwork_extraction(
         indent=indent
     )
 
-def save_random_h5_data(filepath, random_units):
-    """
-    Saves a randomly selected subnetwork to an HDF5 file.
-
-    Args:
-        filepath (str): Path to save the HDF5 file.
-        random_units (list): List of randomly selected unit indices.
-    """
-    with h5py.File(filepath, 'w') as f:
-        f.create_dataset('parcellation', data=np.array(random_units, dtype=np.int32))
-
 def run_knockout(
         output_dir=os.path.join(OUTPUT_DIR, KNOCKOUT_NAME),
         model_name='gpt2',
@@ -795,33 +786,6 @@ def run_knockout(
             **connectivity_kwargs
         )
 
-        # WILL NEED TO CHANGE TO GENERALIZE TO ALL MODELS
-        all_units = 12 * 768  # 12 layers, 768 units per layer = 9,216 total units
-
-        # Generate and process a random subnetwork of the same size
-        num_units = len(data['parcellation'])
-        random_subnetwork = random.sample(all_units, num_units)
-
-        # Save the random subnetwork to an HDF5 file
-        random_knockout_filepath = os.path.join(knockout_dir, f'random_{path}')
-        save_random_h5_data(random_knockout_filepath, random_subnetwork)
-
-        # Run connectivity analysis on the random subnetwork
-        run_connectivity(
-            model_name=model_name,
-            output_dir=knockout_dir,
-            knockout_filepath=random_knockout_filepath,
-            knockout_thresh=0.5,
-            verbose=verbose,
-            indent=indent,
-            **connectivity_kwargs
-        )
-
-        # After processing, delete the .h5 file of the random subnetwork
-        os.remove(knockout_filepath)
-        if verbose:
-            stderr(f"Deleted {knockout_filepath}\n")
-
         for step in steps:
             if step == 'plot_stability':
                 plot_stability(
@@ -831,3 +795,80 @@ def run_knockout(
                 )
             else:
                 raise ValueError('Unrecognized step: %s' % step)
+
+def run_random_knockout(
+        output_dir=os.path.join(OUTPUT_DIR, 'random_knockout'),
+        model_name='gpt2',
+        connectivity_kwargs=None,
+        steps=('plot_stability',),
+        verbose=True,
+        indent=0
+):
+    if connectivity_kwargs is None:
+        connectivity_kwargs = {}
+    subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
+    knockout_dir = os.path.join(output_dir, 'knockout')
+
+    # Create a separate folder for random knockouts
+    random_knockout_dir = os.path.join(knockout_dir, 'random')
+    if not os.path.exists(random_knockout_dir):
+        os.makedirs(random_knockout_dir)
+
+    if verbose:
+        stderr('Running random knockout\n')
+    indent += 2
+
+    if not os.path.exists(knockout_dir):
+        os.makedirs(knockout_dir)
+
+    for path in os.listdir(subnetwork_dir):
+        match = INPUT_NAME_RE.match(path)
+        if not match:
+            continue
+        knockout_filepath = os.path.join(subnetwork_dir, path)
+        data = load_h5_data(knockout_filepath, verbose=False)
+        if 'parcellation' not in data:
+            continue
+
+        # Get the number of units in the original subnetwork
+        subnetwork_units = np.where(data['parcellation'] >= 0.5)[0]
+        num_units = len(subnetwork_units)
+
+        # Randomly select a new set of units with the same size
+        total_units = np.arange(len(data['parcellation']))
+        random_units = np.random.choice(total_units, size=num_units, replace=False)
+
+        # Create a new random knockout mask
+        random_parcellation = np.zeros_like(data['parcellation'])
+        random_parcellation[random_units] = 1
+
+        # Save the new random parcellation mask to a temporary file
+        random_knockout_filepath = os.path.join(random_knockout_dir, f"random_{path}")
+        with h5py.File(random_knockout_filepath, 'w') as f:
+            f.create_dataset('parcellation', data=random_parcellation)
+
+        try:
+            # Run connectivity with the new knockout file
+            run_connectivity(
+                model_name=model_name,
+                output_dir=random_knockout_dir,  # Use the new random knockout folder
+                knockout_filepath=random_knockout_filepath,  # Use the new random mask
+                knockout_thresh=0.5,
+                verbose=verbose,
+                indent=indent,
+                **connectivity_kwargs
+            )
+
+            for step in steps:
+                if step == 'plot_stability':
+                    plot_stability(
+                        output_dir=random_knockout_dir,  # Ensure the plots go to the random knockout folder
+                        verbose=verbose,
+                        indent=indent
+                    )
+                else:
+                    raise ValueError('Unrecognized step: %s' % step)
+        finally:
+            # Delete the temporary file to free up space
+            if os.path.exists(random_knockout_filepath):
+                os.remove(random_knockout_filepath)
