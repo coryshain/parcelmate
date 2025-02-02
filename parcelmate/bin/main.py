@@ -63,4 +63,10 @@ if __name__ == '__main__':
             connectivity_kwargs=cfg.get('connectivity', {}),
             **cfg.get('subnetwork_extraction', {})
         )
-
+    
+    if 'all' in steps or 'random_knockout' in steps:
+        run_random_knockout(
+            output_dir=cfg.get('output_dir', OUTPUT_DIR),
+            connectivity_kwargs=cfg.get('connectivity', {}),
+            **cfg.get('random_knockout', {})
+    )
