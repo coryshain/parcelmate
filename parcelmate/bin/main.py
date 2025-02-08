@@ -23,6 +23,7 @@ if __name__ == '__main__':
         cfg = {}
 
     if 'all' in steps or 'connectivity' in steps:
+        print("Running Connectivity...\n")
         run_connectivity(
             output_dir=cfg.get('output_dir', OUTPUT_DIR),
             overwrite=overwrite,
@@ -30,6 +31,7 @@ if __name__ == '__main__':
         )
 
     if 'all' in steps or 'parcellation' in steps:
+        print("Running Parcellation...\n")
         run_parcellation(
             output_dir=cfg.get('output_dir', OUTPUT_DIR),
             overwrite=overwrite,
@@ -37,27 +39,32 @@ if __name__ == '__main__':
         )
 
     if 'all' in steps or 'subnetwork_extraction' in steps:
+        print("Running Subnetwork Extraction...\n")
         run_subnetwork_extraction(
             output_dir=cfg.get('output_dir', OUTPUT_DIR),
             **cfg.get('subnetwork_extraction', {})
         )
 
     if 'all' in steps or 'plot_connectivity' in steps:
+        print("Plotting Connectivity...\n")
         plot_connectivity(
             output_dir=cfg.get('output_dir', OUTPUT_DIR)
         )
 
     if 'all' in steps or 'plot_parcellation' in steps:
+        print("Plotting Parcellation...\n")
         plot_parcellation(
             output_dir=cfg.get('output_dir', OUTPUT_DIR)
         )
 
     if 'all' in steps or 'plot_stability' in steps:
+        print("Plotting Stability...\n")
         plot_stability(
             output_dir=cfg.get('output_dir', OUTPUT_DIR)
         )
 
     if 'all' in steps or 'subnetwork_knockout' in steps:
+        print("Running Knockout...\n")
         run_knockout(
             output_dir=cfg.get('output_dir', OUTPUT_DIR),
             connectivity_kwargs=cfg.get('connectivity', {}),
@@ -65,6 +72,7 @@ if __name__ == '__main__':
         )
     
     if 'all' in steps or 'random_knockout' in steps:
+        print("Running Random Knockout...\n")
         run_random_knockout(
             output_dir=cfg.get('output_dir', OUTPUT_DIR),
             connectivity_kwargs=cfg.get('connectivity', {}),
