@@ -47,6 +47,8 @@ if __name__ == '__main__':
         job_name = os.path.basename(path)[:-4]
         filename = outdir + '/' + job_name + '.pbs'
         with open(filename, 'w') as f:
+            f.write('#SBATCH --partition=sphinx\n')
+            f.write('#SBATCH --account=nlp\n')
             f.write(base % (job_name, job_name, time, memory, n_cores))
             if use_gpu:
                 f.write('#SBATCH --gres=gpu:1\n')
