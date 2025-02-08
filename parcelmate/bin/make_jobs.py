@@ -57,4 +57,5 @@ if __name__ == '__main__':
             if exclude:
                 f.write('#SBATCH --exclude=%s\n' % exclude)
             f.write('\n\nset -e\n\n')
-            f.write('python -m parcelmate.bin.main %s\n' % path)
+            f.write(f'python -m parcelmate.bin.main {path} -s all\n')
+
