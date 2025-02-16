@@ -838,15 +838,25 @@ def run_random_knockout(
         total_units = np.arange(len(data['parcellation']))
         random_units = np.random.choice(total_units, size=num_units, replace=False)
 
-        # Create a new random knockout mask
+        # Create a new random knockout mask (parcellation)
         random_parcellation = np.zeros_like(data['parcellation'])
         random_parcellation[random_units] = 1
 
-        # Save the new random parcellation mask to a temporary file
-        random_knockout_filepath = os.path.join(random_knockout_dir, f"random_{path}")
-        with h5py.File(random_knockout_filepath, 'w') as f:
-            f.create_dataset('parcellation', data=random_parcellation)
+        # Update coordinates based on the selected random units
+        random_coordinates = data['coordinates'][random_units]  # Extract coordinates of selected units
 
+        # Save the new random knockout mask and updated coordinates to a temporary file
+        random_knockout_filepath = os.path.join(random_knockout_dir, f"random_{path}")
+        save_h5_data(
+            dict(
+                parcellation=random_parcellation,
+                coordinates=random_coordinates,  # Use the updated coordinates for the random units
+            ),
+            random_knockout_filepath,  # Path to save the new file
+            verbose=verbose,
+            indent=indent
+        )
+        
         try:
             # Run connectivity with the new knockout file
             run_connectivity(
