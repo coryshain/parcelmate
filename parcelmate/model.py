@@ -845,13 +845,24 @@ def run_random_knockout(
         # Update coordinates based on the selected random units
         random_coordinates = data['coordinates'][random_units]  # Extract coordinates of selected units
 
+        # DEBUG
+        print()
+        print()
+        new_data = dict(
+                parcellation=random_parcellation,
+                coordinates=random_coordinates,  # Use the updated coordinates for the random units
+            )
+        
+        print(new_data.keys())
+        for elem in new_data.keys():
+            print(type(elem))
+        print()
+        print()
+
         # Save the new random knockout mask and updated coordinates to a temporary file
         random_knockout_filepath = os.path.join(random_knockout_dir, f"random_{path}")
         save_h5_data(
-            dict(
-                parcellation=random_parcellation,
-                coordinates=random_coordinates,  # Use the updated coordinates for the random units
-            ),
+            new_data,
             random_knockout_filepath,  # Path to save the new file
             verbose=verbose,
             indent=indent
