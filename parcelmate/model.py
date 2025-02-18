@@ -843,14 +843,14 @@ def run_random_knockout(
         random_parcellation[random_units] = 1
 
         # Update coordinates based on the selected random units
-        random_coordinates = data['coordinates'][random_units]  # Extract coordinates of selected units
+        #random_coordinates = data['coordinates'][random_units]  # Extract coordinates of selected units
 
         # DEBUG
         print()
         print()
         new_data = dict(
                 parcellation=random_parcellation,
-                coordinates=random_coordinates,  # Use the updated coordinates for the random units
+                coordinates=data['coordinates'],  # Use the updated coordinates for the random units
             )
         
         print(new_data.keys())
