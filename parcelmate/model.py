@@ -893,3 +893,74 @@ def run_random_knockout(
             # Delete the temporary file to free up space
             if os.path.exists(random_knockout_filepath):
                 os.remove(random_knockout_filepath)
+
+
+def run_sequential_knockout(
+        output_dir=os.path.join(OUTPUT_DIR, KNOCKOUT_NAME),
+        model_name='gpt2',
+        connectivity_kwargs=None,
+        steps=('plot_stability',),
+        verbose=True,
+        indent=0
+):
+    if connectivity_kwargs is None:
+        connectivity_kwargs = {}
+
+    subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
+    knockout_dir = os.path.join(output_dir, 'knockout_subnetworks')
+
+    if verbose:
+        stderr('Running sequential knockout\n')
+    indent += 2
+
+    if not os.path.exists(knockout_dir):
+        os.makedirs(knockout_dir)
+
+    for path in os.listdir(subnetwork_dir):
+        match = INPUT_NAME_RE.match(path)
+        if not match:
+            continue
+        knockout_filepath = os.path.join(subnetwork_dir, path)
+        data = load_h5_data(knockout_filepath, verbose=False)
+        if 'parcellation' not in data:
+            continue
+
+        subnetworks = data['parcellation']  # Assuming this stores subnetworks
+        num_subnetworks = subnetworks.shape[1]  # Number of subnetworks
+
+        for i in range(num_subnetworks):
+            temp_knockout_path = os.path.join(knockout_dir, f'knockout_network_{i}.h5')
+
+            # Save the knockout subnetwork to an .h5 file
+            with h5py.File(temp_knockout_path, 'w') as f:
+                f.create_dataset('parcellation', data=subnetworks[:, i])
+
+            run_connectivity(
+                model_name=model_name,
+                output_dir=knockout_dir,
+                knockout_filepath=temp_knockout_path,
+                knockout_thresh=0.5,
+                verbose=verbose,
+                indent=indent,
+                **connectivity_kwargs
+            )
+
+            for step in steps:
+                if step == 'plot_stability':
+                    plot_stability(
+                        output_dir=knockout_dir,
+                        verbose=verbose,
+                        indent=indent
+                    )
+                else:
+                    raise ValueError(f'Unrecognized step: {step}')
+
+    # Clean up temporary knockout files
+    if verbose:
+        stderr("Cleaning up temporary knockout files\n")
+    for file in os.listdir(knockout_dir):
+        if file.startswith("knockout_network_") and file.endswith(".h5"):
+            os.remove(os.path.join(knockout_dir, file))
+
+    if verbose:
+        stderr("Sequential knockout process completed.\n")
