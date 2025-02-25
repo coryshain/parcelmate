@@ -71,6 +71,14 @@ if __name__ == '__main__':
             **cfg.get('subnetwork_extraction', {})
         )
     
+    if 'all' in steps or 'run_sequential_knockout' in steps:
+        print("Running Sequential Knockout...\n")
+        run_random_knockout(
+            output_dir=cfg.get('output_dir', OUTPUT_DIR),
+            connectivity_kwargs=cfg.get('connectivity', {}),
+            **cfg.get('run_sequential_knockout', {})
+    )
+
     if 'all' in steps or 'random_knockout' in steps:
         print("Running Random Knockout...\n")
         run_random_knockout(
@@ -78,3 +86,4 @@ if __name__ == '__main__':
             connectivity_kwargs=cfg.get('connectivity', {}),
             **cfg.get('random_knockout', {})
     )
+
