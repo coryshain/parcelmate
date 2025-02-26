@@ -842,12 +842,7 @@ def run_random_knockout(
         random_parcellation = np.zeros_like(data['parcellation'])
         random_parcellation[random_units] = 1
 
-        # Update coordinates based on the selected random units
-        #random_coordinates = data['coordinates'][random_units]  # Extract coordinates of selected units
 
-        # DEBUG
-        print()
-        print()
         new_data = dict(
                 parcellation=random_parcellation,
                 coordinates=data['coordinates'],  # Use the updated coordinates for the random units
@@ -896,7 +891,7 @@ def run_random_knockout(
 
 
 def run_sequential_knockout(
-        output_dir=os.path.join(OUTPUT_DIR, f"{KNOCKOUT_NAME}_single"),
+        output_dir=os.path.join(OUTPUT_DIR, KNOCKOUT_NAME),
         model_name='gpt2',
         connectivity_kwargs=None,
         steps=('plot_stability',),
@@ -906,15 +901,20 @@ def run_sequential_knockout(
     if connectivity_kwargs is None:
         connectivity_kwargs = {}
 
-    subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
-    knockout_dir = os.path.join(output_dir, 'knockout_subnetworks')
+    # Define directory paths
+    subnetwork_dir = os.path.join(output_dir, 'subnetworks')
+    knockout_dir = os.path.join(output_dir, 'knockout')
+    subnetwork_connectivity_dir = os.path.join(subnetwork_dir, 'connectivity')
+    subnetwork_plots_dir = os.path.join(subnetwork_dir, 'plots')
 
     if verbose:
         stderr(f'Running sequential knockout in {subnetwork_dir}\n')
     indent += 2
 
-    if not os.path.exists(knockout_dir):
-        os.makedirs(knockout_dir)
+    # Create necessary directories
+    for dir_path in [knockout_dir, subnetwork_dir, subnetwork_connectivity_dir, subnetwork_plots_dir]:
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path)
 
     print(f"Checking files in {subnetwork_dir}: {os.listdir(subnetwork_dir)}")
 
@@ -930,25 +930,24 @@ def run_sequential_knockout(
             print(f"Skipping {path}: No 'parcellation' key found")
             continue
 
-        subnetworks = data['parcellation']  # Assuming this stores subnetworks
+        subnetworks = data['parcellation']  
         if len(subnetworks.shape) < 2:
             print(f"Skipping {path}: Not enough dimensions")
             continue
 
-        num_subnetworks = subnetworks.shape[1]  # Number of subnetworks
+        num_subnetworks = subnetworks.shape[1]
         print(f"Processing {path}: {num_subnetworks} subnetworks found")
 
         for i in range(num_subnetworks):
-            temp_knockout_path = os.path.join(knockout_dir, f'knockout_network_{i}.h5')
+            temp_knockout_path = os.path.join(subnetwork_connectivity_dir, f'knockout_network_{i}.h5')
 
-            # Save the knockout subnetwork to an .h5 file
             with h5py.File(temp_knockout_path, 'w') as f:
                 f.create_dataset('parcellation', data=subnetworks[:, i])
                 print(f"Saving knockout file: {temp_knockout_path}")
 
             run_connectivity(
                 model_name=model_name,
-                output_dir=knockout_dir,
+                output_dir=subnetwork_connectivity_dir,
                 knockout_filepath=temp_knockout_path,
                 knockout_thresh=0.5,
                 verbose=verbose,
@@ -959,7 +958,7 @@ def run_sequential_knockout(
             for step in steps:
                 if step == 'plot_stability':
                     plot_stability(
-                        output_dir=knockout_dir,
+                        output_dir=subnetwork_plots_dir,
                         verbose=verbose,
                         indent=indent
                     )
