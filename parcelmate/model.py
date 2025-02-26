@@ -948,8 +948,10 @@ def run_sequential_knockout(
 
     for path in os.listdir(subnetwork_dir):
         match = INPUT_NAME_RE.match(path)
+        print(f"Files in {subnetwork_dir}: {os.listdir(subnetwork_dir)}")
+
         if not match:
-            continue
+            print(f"Files in {subnetwork_dir}: {os.listdir(subnetwork_dir)}")
         knockout_filepath = os.path.join(subnetwork_dir, path)
         data = load_h5_data(knockout_filepath, verbose=False)
         if 'parcellation' not in data:
@@ -958,12 +960,17 @@ def run_sequential_knockout(
         subnetworks = data['parcellation']  # Assuming this stores subnetworks
         num_subnetworks = subnetworks.shape[1]  # Number of subnetworks
 
+        print(f"Number of subnetworks found: {num_subnetworks}")
+
+
         for i in range(num_subnetworks):
             temp_knockout_path = os.path.join(knockout_dir, f'knockout_network_{i}.h5')
 
             # Save the knockout subnetwork to an .h5 file
             with h5py.File(temp_knockout_path, 'w') as f:
                 f.create_dataset('parcellation', data=subnetworks[:, i])
+                print(f"Saving knockout file: {temp_knockout_path}")
+
 
             run_connectivity(
                 model_name=model_name,
@@ -986,11 +993,11 @@ def run_sequential_knockout(
                     raise ValueError(f'Unrecognized step: {step}')
 
     # Clean up temporary knockout files
-    if verbose:
-        stderr("Cleaning up temporary knockout files\n")
-    for file in os.listdir(knockout_dir):
-        if file.startswith("knockout_network_") and file.endswith(".h5"):
-            os.remove(os.path.join(knockout_dir, file))
+    #if verbose:
+      #  stderr("Cleaning up temporary knockout files\n")
+    #for file in os.listdir(knockout_dir):
+       # if file.startswith("knockout_network_") and file.endswith(".h5"):
+       #     os.remove(os.path.join(knockout_dir, file))
 
     if verbose:
         stderr("Sequential knockout process completed.\n")
