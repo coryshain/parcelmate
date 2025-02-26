@@ -926,7 +926,7 @@ def run_random_knockout(
 
 
 def run_sequential_knockout(
-        output_dir=os.path.join(OUTPUT_DIR, KNOCKOUT_NAME),
+        output_dir=os.path.join(OUTPUT_DIR, f"{KNOCKOUT_NAME}_single"),
         model_name='gpt2',
         connectivity_kwargs=None,
         steps=('plot_stability',),
@@ -940,28 +940,33 @@ def run_sequential_knockout(
     knockout_dir = os.path.join(output_dir, 'knockout_subnetworks')
 
     if verbose:
-        stderr('Running sequential knockout\n')
+        stderr(f'Running sequential knockout in {subnetwork_dir}\n')
     indent += 2
 
     if not os.path.exists(knockout_dir):
         os.makedirs(knockout_dir)
 
+    print(f"Checking files in {subnetwork_dir}: {os.listdir(subnetwork_dir)}")
+
     for path in os.listdir(subnetwork_dir):
         match = INPUT_NAME_RE.match(path)
-        print(f"Files in {subnetwork_dir}: {os.listdir(subnetwork_dir)}")
-
         if not match:
-            print(f"Files in {subnetwork_dir}: {os.listdir(subnetwork_dir)}")
+            print(f"Skipping file (no match): {path}")
+            continue
+
         knockout_filepath = os.path.join(subnetwork_dir, path)
         data = load_h5_data(knockout_filepath, verbose=False)
         if 'parcellation' not in data:
+            print(f"Skipping {path}: No 'parcellation' key found")
             continue
 
         subnetworks = data['parcellation']  # Assuming this stores subnetworks
+        if len(subnetworks.shape) < 2:
+            print(f"Skipping {path}: Not enough dimensions")
+            continue
+
         num_subnetworks = subnetworks.shape[1]  # Number of subnetworks
-
-        print(f"Number of subnetworks found: {num_subnetworks}")
-
+        print(f"Processing {path}: {num_subnetworks} subnetworks found")
 
         for i in range(num_subnetworks):
             temp_knockout_path = os.path.join(knockout_dir, f'knockout_network_{i}.h5')
@@ -970,7 +975,6 @@ def run_sequential_knockout(
             with h5py.File(temp_knockout_path, 'w') as f:
                 f.create_dataset('parcellation', data=subnetworks[:, i])
                 print(f"Saving knockout file: {temp_knockout_path}")
-
 
             run_connectivity(
                 model_name=model_name,
@@ -991,13 +995,6 @@ def run_sequential_knockout(
                     )
                 else:
                     raise ValueError(f'Unrecognized step: {step}')
-
-    # Clean up temporary knockout files
-    #if verbose:
-      #  stderr("Cleaning up temporary knockout files\n")
-    #for file in os.listdir(knockout_dir):
-       # if file.startswith("knockout_network_") and file.endswith(".h5"):
-       #     os.remove(os.path.join(knockout_dir, file))
 
     if verbose:
         stderr("Sequential knockout process completed.\n")
