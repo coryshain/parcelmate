@@ -32,7 +32,7 @@ def plot_connectivity(
         filepath = os.path.join(connectivity_dir, path)
         data = load_h5_data(filepath, verbose=verbose, indent=indent)
         R = np.nan_to_num(data['connectivity'])
-        coordinates = data['coordinates']
+        coordinates = data['coordinates'][:, 0]  # 0th dimension is layer
         layers = np.unique(coordinates)
         for layer in layers:
             sel = coordinates == layer
@@ -88,7 +88,7 @@ def plot_parcellation(
             if 'parcellation' not in data:
                 continue
             parcellation = data['parcellation']
-            coordinates = data['coordinates']
+            coordinates = data['coordinates'][:, 0]  # 0th dimension is layer
             counts_by_layer = {x: y for x, y in zip(*np.unique(coordinates, return_counts=True))}
             layers = sorted(list(counts_by_layer.keys()))
             n_layers = len(layers)
@@ -156,7 +156,7 @@ def plot_stability(
         R = np.abs(R)
         R_by_domain[domain][key] = R
         if coordinates is None:
-            coordinates = data['coordinates']
+            coordinates = data['coordinates'][:, 0]  # 0th dimension is layer
 
     layers = np.unique(coordinates)
 

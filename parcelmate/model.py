@@ -16,79 +16,108 @@ from parcelmate.util import *
 from parcelmate.plot import *
 
 
-class KnockoutModel(torch.nn.Module):
-    def __init__(self, model, knockout_probs, knockout_coordinates, knockout_thresh=0.5, *args, **kwargs):
-        super(KnockoutModel, self).__init__(*args, **kwargs)
+class PerturbedModel(torch.nn.Module):
+    def __init__(self, model, perturbation_coordinates, perturbation_values=None, *args, **kwargs):
+        super(PerturbedModel, self).__init__(*args, **kwargs)
         self.model = model
-        if len(knockout_probs.shape) == 1:
-            knockout_probs = knockout_probs[..., None]
-        self.knockout_probs = knockout_probs
-        self.knockout_coordinates = knockout_coordinates
-        self.knockout_thresh=knockout_thresh
+        self.perturbation_coordinates = perturbation_coordinates
+        if perturbation_values is None:  # Default to zero (knockout)
+            perturbation_values = np.zeros(len(self.perturbation_coordinates))
+        assert len(perturbation_values) == len(perturbation_coordinates), \
+            'perturbation_values must match perturbation_coordinates'
+        self.perturbation_values = perturbation_values
 
         layers_attr = 'h'
-        layer_indices = np.unique(knockout_coordinates)
+        layer_indices = np.unique(perturbation_coordinates[:, 0])  # 0th dimension is layer
         layers = getattr(self.model, layers_attr)
-        knockout_mask = {}
-        for l_ix in range(len(layer_indices)):
+        perturbation_coordinate_tensors = {}
+        perturbation_value_tensors = {}
+        for l_ix in layer_indices:
             if l_ix == 0:
                 key = 'embedding'
             else:
                 key = l_ix - 1 # Shifted down bc of embedding layer
-            sel = knockout_coordinates == l_ix
-            inv_mask = None
-            for ix in range(knockout_probs.shape[1]):
-                inv_mask_ = knockout_probs[sel, ix] > self.knockout_thresh
-                if inv_mask is None:
-                    inv_mask = inv_mask_
-                else:
-                    inv_mask |= inv_mask_
-
-            mask = ~inv_mask
-            mask = torch.nn.Parameter(
+            sel = perturbation_coordinates[:, 0] == l_ix  # 0th dimension is layer
+            layer_coordinates = perturbation_coordinates[sel][:, 1]  # 1st dimension is hidden unit
+            layer_coordinates = torch.nn.Parameter(
                 torch.as_tensor(
-                    mask[None, None, ...]  # Binarize and add batch and time dims
+                    layer_coordinates
                 ),
                 requires_grad=False
             )
-            knockout_mask[key] = mask
+            perturbation_coordinate_tensors[key] = layer_coordinates
+            layer_values = perturbation_values[sel]
+            layer_values = torch.nn.Parameter(
+                torch.as_tensor(
+                    layer_values,
+                    dtype=model.dtype
+                ),
+                requires_grad=False
+            )
+            perturbation_value_tensors[key] = layer_values
 
-        self.knockout_mask = knockout_mask
+        self.perturbation_coordinate_tensors = perturbation_coordinate_tensors
+        self.perturbation_value_tensors = perturbation_value_tensors
 
-        self.model.drop = KnockoutLayer(self.model.drop, self.knockout_mask['embedding'])
-        for ix in range(len(layers)):
-            layers[ix] = KnockoutLayer(layers[ix], self.knockout_mask[ix])
+        for l_ix in layer_indices:
+            if l_ix == 0:
+                _l_ix = 'embedding'
+                source_layer = self.model.drop
+            else:
+                _l_ix = l_ix - 1  # Shifted down bc of embedding layer
+                source_layer = layers[_l_ix]
+            layer = PerturbedLayer(
+                source_layer,
+                perturbation_coordinates=self.perturbation_coordinate_tensors[_l_ix],
+                perturbation_values=self.perturbation_value_tensors[_l_ix]
+            )
+            if _l_ix == 'embedding':
+                self.model.drop = layer
+            else:
+                layers[_l_ix] = layer
 
     def forward(self, *args, **kwargs):
         out = self.model.forward(*args, **kwargs)
         return out
 
 
-class KnockoutLayer(torch.nn.Module):
-    def __init__(self, layer, knockout_mask=None, *args, **kwargs):
-        super(KnockoutLayer, self).__init__(*args, **kwargs)
+class PerturbedLayer(torch.nn.Module):
+    def __init__(self, layer, perturbation_coordinates=None, perturbation_values=None, *args, **kwargs):
+        super(PerturbedLayer, self).__init__(*args, **kwargs)
         self.layer = layer
-        self.knockout_mask = knockout_mask
+        self.perturbation_coordinates = perturbation_coordinates
+        self.perturbation_values = perturbation_values
 
     def forward(self, *args, **kwargs):
         out = self.layer.forward(*args, **kwargs)
-        if self.knockout_mask is not None:
+        if self.perturbation_coordinates is not None:
             if isinstance(out, torch.Tensor):
-                out *= self.knockout_mask
+                out[..., self.perturbation_coordinates] = self.perturbation_values
             else:
-                out = (out[0] * self.knockout_mask,) + out[1:]
+                out0 = out[0]
+                out0[..., self.perturbation_coordinates] = self.perturbation_values
+                out = (out0,) + out[1:]
 
         return out
 
 
-def get_model_and_tokenizer(model_name, knockout_probs=None, knockout_coordinates=None, knockout_thresh=0.5):
+def get_model_and_tokenizer(model_name, knockout_probs=None, knockout_thresh=0.5, coordinates=None):
     model = AutoModel.from_pretrained(model_name)
     if knockout_probs is not None:
-        model = KnockoutModel(
+        assert coordinates is not None, 'coordinates must be provided if knockout_probs is not None'
+        sel = None
+        for ix in range(knockout_probs.shape[1]):
+            inv_mask_ = knockout_probs[:, ix] >= knockout_thresh
+            if sel is None:
+                sel = inv_mask_
+            else:
+                sel |= inv_mask_
+        perturbation_coordinates = coordinates[sel]
+        perturbation_values = None
+        model = PerturbedModel(
             model,
-            knockout_probs=knockout_probs,
-            knockout_coordinates=knockout_coordinates,
-            knockout_thresh=knockout_thresh
+            perturbation_coordinates=perturbation_coordinates,
+            perturbation_values=perturbation_values
         )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
@@ -135,7 +164,7 @@ def get_timecourses(
             out_shape = (sum(x.shape[-1] for x in states), T)
             timecourses = np.zeros(out_shape, dtype=np.float32)
         if coordinates is None:
-            coordinates = np.zeros((sum(x.shape[-1] for x in states),), dtype=np.int32)
+            coordinates = np.zeros((sum(x.shape[-1] for x in states), 2), dtype=np.int32)
         h = 0
         for s, state in enumerate(states):
             _h = state.size(-1)
@@ -145,7 +174,8 @@ def get_timecourses(
                 lower=highpass,
                 upper=lowpass
             )
-            coordinates[h:h + _h] = s
+            coordinates[h:h + _h, 0] = s
+            coordinates[h:h + _h, 1] = np.arange(_h)
             h += _h
         t += _t
     if verbose:
@@ -422,7 +452,7 @@ def run_connectivity(
     model, tokenizer = get_model_and_tokenizer(
         model_name,
         knockout_probs=knockout_probs,
-        knockout_coordinates=knockout_coordinates,
+        coordinates=knockout_coordinates,
         knockout_thresh=knockout_thresh
     )
 
@@ -586,7 +616,7 @@ def run_parcellation(
         n_networks=50,
         n_samples=100,
         binarize_connectivity=True,
-        connectivity_pca_components=None,
+        connectivity_pca_components=200,
         connectivity_ica_components=None,
         clustering_kwargs=None,
         n_alignments=None,
