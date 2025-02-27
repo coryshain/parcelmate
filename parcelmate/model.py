@@ -235,7 +235,7 @@ def sample_parcellations(
         n_networks=50,
         n_samples=100,
         binarize_connectivity=True,
-        connectivity_pca_components=200,
+        connectivity_pca_components=None,
         connectivity_ica_components=None,
         clustering_kwargs=None,
         verbose=True,
