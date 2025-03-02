@@ -73,7 +73,7 @@ if __name__ == '__main__':
     
     if 'all' in steps or 'run_sequential_knockout' in steps:
         print("Running Sequential Knockout...\n")
-        run_random_knockout(
+        run_sequential_knockout(
             output_dir=cfg.get('output_dir', OUTPUT_DIR),
             connectivity_kwargs=cfg.get('connectivity', {}),
             **cfg.get('run_sequential_knockout', {})
