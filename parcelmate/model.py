@@ -921,7 +921,7 @@ def run_random_knockout(
 
 
 def run_sequential_knockout(
-        output_dir=os.path.join(OUTPUT_DIR, KNOCKOUT_NAME),
+        output_dir=os.path.join(OUTPUT_DIR, 'sequential_knockout'),
         model_name='gpt2',
         connectivity_kwargs=None,
         steps=('plot_stability',),
@@ -932,17 +932,16 @@ def run_sequential_knockout(
         connectivity_kwargs = {}
 
     # Define directory paths
-    subnetwork_dir = os.path.join(output_dir, 'subnetworks')
+    subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
     knockout_dir = os.path.join(output_dir, 'knockout')
-    subnetwork_connectivity_dir = os.path.join(subnetwork_dir, 'connectivity')
-    subnetwork_plots_dir = os.path.join(subnetwork_dir, 'plots')
+    sequential_knockout_dir = os.path.join(knockout_dir, 'sequential')
 
     if verbose:
-        stderr(f'Running sequential knockout in {subnetwork_dir}\n')
+        stderr('Running sequential knockout\n')
     indent += 2
 
     # Create necessary directories
-    for dir_path in [knockout_dir, subnetwork_dir, subnetwork_connectivity_dir, subnetwork_plots_dir]:
+    for dir_path in [knockout_dir, sequential_knockout_dir]:
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
 
@@ -969,31 +968,41 @@ def run_sequential_knockout(
         print(f"Processing {path}: {num_subnetworks} subnetworks found")
 
         for i in range(num_subnetworks):
-            temp_knockout_path = os.path.join(subnetwork_connectivity_dir, f'knockout_network_{i}.h5')
+            temp_knockout_path = os.path.join(sequential_knockout_dir, f'knockout_{path}_subnet_{i}.h5')
 
-            with h5py.File(temp_knockout_path, 'w') as f:
-                f.create_dataset('parcellation', data=subnetworks[:, i])
-                print(f"Saving knockout file: {temp_knockout_path}")
+            # Save individual subnetwork knockout mask
+            new_data = {
+                'parcellation': subnetworks[:, i],
+                'coordinates': data['coordinates']
+            }
+            save_h5_data(new_data, temp_knockout_path, verbose=verbose, indent=indent)
+            print(f"Saved knockout file: {temp_knockout_path}")
 
-            run_connectivity(
-                model_name=model_name,
-                output_dir=subnetwork_connectivity_dir,
-                knockout_filepath=temp_knockout_path,
-                knockout_thresh=0.5,
-                verbose=verbose,
-                indent=indent,
-                **connectivity_kwargs
-            )
+            try:
+                run_connectivity(
+                    model_name=model_name,
+                    output_dir=sequential_knockout_dir,
+                    knockout_filepath=temp_knockout_path,
+                    knockout_thresh=0.5,
+                    verbose=verbose,
+                    indent=indent,
+                    **connectivity_kwargs
+                )
 
-            for step in steps:
-                if step == 'plot_stability':
-                    plot_stability(
-                        output_dir=subnetwork_plots_dir,
-                        verbose=verbose,
-                        indent=indent
-                    )
-                else:
-                    raise ValueError(f'Unrecognized step: {step}')
+                for step in steps:
+                    if step == 'plot_stability':
+                        plot_stability(
+                            output_dir=sequential_knockout_dir,
+                            verbose=verbose,
+                            indent=indent
+                        )
+                    else:
+                        raise ValueError(f'Unrecognized step: {step}')
+            finally:
+                # Delete the temporary knockout file
+                if os.path.exists(temp_knockout_path):
+                    os.remove(temp_knockout_path)
+                    print(f"Deleted temp file: {temp_knockout_path}")
 
     if verbose:
         stderr("Sequential knockout process completed.\n")
