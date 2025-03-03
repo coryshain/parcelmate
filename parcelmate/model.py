@@ -753,6 +753,9 @@ def run_subnetwork_extraction(
         if len(network) == len(domains):
             network = np.stack(network, axis=0).mean(axis=0)
             networks.append(network)
+    print()
+    print("Num networks:", len(networks)) 
+    print()
 
     networks = np.stack(networks, axis=1)
 
@@ -797,13 +800,14 @@ def run_knockout(
     if not os.path.exists(knockout_dir):
         os.makedirs(knockout_dir)
 
-    print("subnetwork dir for knockout:")
-    print(subnetwork_dir)
-    print()
     for path in os.listdir(subnetwork_dir):
+        print()
+        print(path)
+        print()
         match = INPUT_NAME_RE.match(path)
         if not match:
             continue
+
         knockout_filepath = os.path.join(subnetwork_dir, path)
         data = load_h5_data(knockout_filepath, verbose=False)
         if 'parcellation' not in data:
@@ -839,13 +843,9 @@ def run_random_knockout(
 ):
     if connectivity_kwargs is None:
         connectivity_kwargs = {}
+
     subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
     knockout_dir = os.path.join(output_dir, 'knockout')
-
-    # Create a separate folder for random knockouts
-    random_knockout_dir = os.path.join(knockout_dir, 'random')
-    if not os.path.exists(random_knockout_dir):
-        os.makedirs(random_knockout_dir)
 
     if verbose:
         stderr('Running random knockout\n')
@@ -854,13 +854,19 @@ def run_random_knockout(
     if not os.path.exists(knockout_dir):
         os.makedirs(knockout_dir)
 
+    all_subnetwork_units = []  # Store all units from all subnetworks
+
     for path in os.listdir(subnetwork_dir):
         match = INPUT_NAME_RE.match(path)
         if not match:
             continue
-        print("Subnetwork dir for random_knockout")
-        print(subnetwork_dir)
-        print()
+        
+        # Create a subdirectory for this specific subnetwork
+        subnetwork_name = match.group(1)  # Extract subnetwork name from the filename
+        subnetwork_random_dir = os.path.join(knockout_dir, 'random', subnetwork_name)
+        if not os.path.exists(subnetwork_random_dir):
+            os.makedirs(subnetwork_random_dir)
+
         knockout_filepath = os.path.join(subnetwork_dir, path)
         data = load_h5_data(knockout_filepath, verbose=False)
         if 'parcellation' not in data:
@@ -868,6 +874,7 @@ def run_random_knockout(
 
         # Get the number of units in the original subnetwork
         subnetwork_units = np.where(data['parcellation'] >= 0.5)[0]
+        all_subnetwork_units.extend(subnetwork_units)  # Collect for later
         num_units = len(subnetwork_units)
 
         # Randomly select a new set of units with the same size
@@ -878,27 +885,26 @@ def run_random_knockout(
         random_parcellation = np.zeros_like(data['parcellation'])
         random_parcellation[random_units] = 1
 
-
         new_data = dict(
-                parcellation=random_parcellation,
-                coordinates=data['coordinates'],  # Use the updated coordinates for the random units
-            )
+            parcellation=random_parcellation,
+            coordinates=data['coordinates'],  # Use the updated coordinates for the random units
+        )
 
-        # Save the new random knockout mask and updated coordinates to a temporary file
-        random_knockout_filepath = os.path.join(random_knockout_dir, f"random_{path}")
+        # Save the new random knockout mask and updated coordinates inside the subnetwork directory
+        random_knockout_filepath = os.path.join(subnetwork_random_dir, f"random_{path}")
         save_h5_data(
             new_data,
-            random_knockout_filepath,  # Path to save the new file
+            random_knockout_filepath,
             verbose=verbose,
             indent=indent
         )
-        
+
         try:
             # Run connectivity with the new knockout file
             run_connectivity(
                 model_name=model_name,
-                output_dir=random_knockout_dir,  # Use the new random knockout folder
-                knockout_filepath=random_knockout_filepath,  # Use the new random mask
+                output_dir=subnetwork_random_dir,  # Use the specific subnetwork's directory
+                knockout_filepath=random_knockout_filepath,
                 knockout_thresh=0.5,
                 verbose=verbose,
                 indent=indent,
@@ -908,7 +914,7 @@ def run_random_knockout(
             for step in steps:
                 if step == 'plot_stability':
                     plot_stability(
-                        output_dir=random_knockout_dir,  # Ensure the plots go to the random knockout folder
+                        output_dir=subnetwork_random_dir,
                         verbose=verbose,
                         indent=indent
                     )
@@ -918,6 +924,58 @@ def run_random_knockout(
             # Delete the temporary file to free up space
             if os.path.exists(random_knockout_filepath):
                 os.remove(random_knockout_filepath)
+
+
+    # Random knockout of all subnetworks combined**
+    if all_subnetwork_units:
+        all_subnetworks_random_dir = os.path.join(knockout_dir, 'random', 'all_subnetworks')
+        if not os.path.exists(all_subnetworks_random_dir):
+            os.makedirs(all_subnetworks_random_dir)
+
+        total_units = np.arange(len(data['parcellation']))  
+        num_units = len(all_subnetwork_units)  # Total size of all subnetworks
+        random_units = np.random.choice(total_units, size=num_units, replace=False)
+
+        random_parcellation = np.zeros_like(data['parcellation'])
+        random_parcellation[random_units] = 1
+
+        all_random_data = dict(
+            parcellation=random_parcellation,
+            coordinates=data['coordinates'], 
+        )
+
+        all_random_filepath = os.path.join(all_subnetworks_random_dir, "random_all_subnetworks.h5")
+        save_h5_data(
+            all_random_data,
+            all_random_filepath,
+            verbose=verbose,
+            indent=indent
+        )
+
+        try:
+            run_connectivity(
+                model_name=model_name,
+                output_dir=all_subnetworks_random_dir,  # Store under 'all_subnetworks'
+                knockout_filepath=all_random_filepath,
+                knockout_thresh=0.5,
+                verbose=verbose,
+                indent=indent,
+                **connectivity_kwargs
+            )
+
+            for step in steps:
+                if step == 'plot_stability':
+                    plot_stability(
+                        output_dir=all_subnetworks_random_dir, 
+                        verbose=verbose,
+                        indent=indent
+                    )
+                else:
+                    raise ValueError('Unrecognized step: %s' % step)
+        finally:
+            if os.path.exists(all_random_filepath):
+                os.remove(all_random_filepath)
+
 
 
 def run_sequential_knockout(
@@ -931,8 +989,7 @@ def run_sequential_knockout(
     if connectivity_kwargs is None:
         connectivity_kwargs = {}
 
-    # Define directory paths
-    knockout_dir = os.path.join(output_dir, 'knockout')  # Assume knockout already exists
+    knockout_dir = os.path.join(output_dir, 'knockout') 
     sequential_knockout_dir = os.path.join(knockout_dir, 'sequential')
     subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
 
@@ -990,33 +1047,33 @@ def run_sequential_knockout(
             save_h5_data(new_data, temp_knockout_path, verbose=verbose, indent=indent)
             print(f"Saved knockout file: {temp_knockout_path}")
 
-            try:
+           # try:
                 # Run connectivity analysis
-                run_connectivity(
-                    model_name=model_name,
-                    output_dir=subnetwork_folder,
-                    knockout_filepath=temp_knockout_path,
-                    knockout_thresh=0.5,
-                    verbose=verbose,
-                    indent=indent,
-                    **connectivity_kwargs
-                )
+            run_connectivity(
+                model_name=model_name,
+                output_dir=subnetwork_folder,
+                knockout_filepath=temp_knockout_path,
+                knockout_thresh=0.5,
+                verbose=verbose,
+                indent=indent,
+                **connectivity_kwargs
+            )
 
                 # Run the specified steps (e.g., plotting)
-                for step in steps:
-                    if step == 'plot_stability':
-                        plot_stability(
-                            output_dir=subnetwork_folder,
-                            verbose=verbose,
-                            indent=indent
-                        )
-                    else:
-                        raise ValueError(f'Unrecognized step: {step}')
-            finally:
+            for step in steps:
+                if step == 'plot_stability':
+                    plot_stability(
+                        output_dir=subnetwork_folder,
+                        verbose=verbose,
+                        indent=indent
+                    )
+                else:
+                    raise ValueError(f'Unrecognized step: {step}')
+            #finally:
                 # Delete the temporary knockout file
-                if os.path.exists(temp_knockout_path):
-                    os.remove(temp_knockout_path)
-                    print(f"Deleted temp file: {temp_knockout_path}")
+                #if os.path.exists(temp_knockout_path):
+                    #os.remove(temp_knockout_path)
+                   # print(f"Deleted temp file: {temp_knockout_path}")
 
     if verbose:
         stderr("Sequential knockout process completed.\n")
