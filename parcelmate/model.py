@@ -767,6 +767,9 @@ def run_knockout(
     if not os.path.exists(knockout_dir):
         os.makedirs(knockout_dir)
 
+    print("subnetwork dir for knockout:")
+    print(subnetwork_dir)
+    print()
     for path in os.listdir(subnetwork_dir):
         match = INPUT_NAME_RE.match(path)
         if not match:
@@ -825,6 +828,9 @@ def run_random_knockout(
         match = INPUT_NAME_RE.match(path)
         if not match:
             continue
+        print("Subnetwork dir for random_knockout")
+        print(subnetwork_dir)
+        print()
         knockout_filepath = os.path.join(subnetwork_dir, path)
         data = load_h5_data(knockout_filepath, verbose=False)
         if 'parcellation' not in data:
@@ -847,12 +853,6 @@ def run_random_knockout(
                 parcellation=random_parcellation,
                 coordinates=data['coordinates'],  # Use the updated coordinates for the random units
             )
-        
-        print(new_data.keys())
-        for elem in new_data.keys():
-            print(type(elem))
-        print()
-        print()
 
         # Save the new random knockout mask and updated coordinates to a temporary file
         random_knockout_filepath = os.path.join(random_knockout_dir, f"random_{path}")
@@ -902,19 +902,19 @@ def run_sequential_knockout(
         connectivity_kwargs = {}
 
     # Define directory paths
-    subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
-    knockout_dir = os.path.join(output_dir, 'knockout')
+    knockout_dir = os.path.join(output_dir, 'knockout')  # Assume knockout already exists
     sequential_knockout_dir = os.path.join(knockout_dir, 'sequential')
+    subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
 
     if verbose:
         stderr('Running sequential knockout\n')
     indent += 2
 
-    # Create necessary directories
-    for dir_path in [knockout_dir, sequential_knockout_dir]:
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
+    # Create the sequential knockout directory if it doesn't exist
+    if not os.path.exists(sequential_knockout_dir):
+        os.makedirs(sequential_knockout_dir)
 
+    # Process files in the subnetwork directory
     print(f"Checking files in {subnetwork_dir}: {os.listdir(subnetwork_dir)}")
 
     for path in os.listdir(subnetwork_dir):
@@ -938,9 +938,21 @@ def run_sequential_knockout(
         print(f"Processing {path}: {num_subnetworks} subnetworks found")
 
         for i in range(num_subnetworks):
-            temp_knockout_path = os.path.join(sequential_knockout_dir, f'knockout_{path}_subnet_{i}.h5')
+            # Create the subnetwork-specific directory
+            subnetwork_folder = os.path.join(sequential_knockout_dir, f'subnet_{i}')
+            if not os.path.exists(subnetwork_folder):
+                os.makedirs(subnetwork_folder)
+
+            # Create subdirectories for connectivity and plots
+            connectivity_dir = os.path.join(subnetwork_folder, 'connectivity')
+            plots_dir = os.path.join(subnetwork_folder, 'plots')
+            if not os.path.exists(connectivity_dir):
+                os.makedirs(connectivity_dir)
+            if not os.path.exists(plots_dir):
+                os.makedirs(plots_dir)
 
             # Save individual subnetwork knockout mask
+            temp_knockout_path = os.path.join(subnetwork_folder, f'knockout_{path}_subnet_{i}.h5')
             new_data = {
                 'parcellation': subnetworks[:, i],
                 'coordinates': data['coordinates']
@@ -949,9 +961,10 @@ def run_sequential_knockout(
             print(f"Saved knockout file: {temp_knockout_path}")
 
             try:
+                # Run connectivity analysis
                 run_connectivity(
                     model_name=model_name,
-                    output_dir=sequential_knockout_dir,
+                    output_dir=subnetwork_folder,
                     knockout_filepath=temp_knockout_path,
                     knockout_thresh=0.5,
                     verbose=verbose,
@@ -959,10 +972,11 @@ def run_sequential_knockout(
                     **connectivity_kwargs
                 )
 
+                # Run the specified steps (e.g., plotting)
                 for step in steps:
                     if step == 'plot_stability':
                         plot_stability(
-                            output_dir=sequential_knockout_dir,
+                            output_dir=subnetwork_folder,
                             verbose=verbose,
                             indent=indent
                         )
