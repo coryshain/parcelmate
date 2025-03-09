@@ -833,8 +833,8 @@ def run_knockout(
             else:
                 raise ValueError('Unrecognized step: %s' % step)
 
-def run_random_knockout(
-        output_dir=os.path.join(OUTPUT_DIR, 'random_knockout'),
+def run_random_perturbation(
+        output_dir=os.path.join(OUTPUT_DIR, 'random_perturbation'),
         model_name='gpt2',
         connectivity_kwargs=None,
         steps=('plot_stability',),
@@ -845,14 +845,14 @@ def run_random_knockout(
         connectivity_kwargs = {}
 
     subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
-    knockout_dir = os.path.join(output_dir, 'knockout')
+    perturbation_dir = os.path.join(output_dir, 'perturbation')
 
     if verbose:
-        stderr('Running random knockout\n')
+        stderr('Running random perturbation\n')
     indent += 2
 
-    if not os.path.exists(knockout_dir):
-        os.makedirs(knockout_dir)
+    if not os.path.exists(perturbation_dir):
+        os.makedirs(perturbation_dir)
 
     all_subnetwork_units = []  # Store all units from all subnetworks
 
@@ -861,51 +861,50 @@ def run_random_knockout(
         if not match:
             continue
         
-        # Create a subdirectory for this specific subnetwork
-        subnetwork_number = match.group(2)  # This is the correct number
-        subnetwork_random_dir = os.path.join(knockout_dir, 'random', f"subnetwork_{subnetwork_number}")
+        subnetwork_number = match.group(2)
+        subnetwork_random_dir = os.path.join(perturbation_dir, 'random', f"subnetwork_{subnetwork_number}")
         if not os.path.exists(subnetwork_random_dir):
             os.makedirs(subnetwork_random_dir)
 
-        knockout_filepath = os.path.join(subnetwork_dir, path)
-        data = load_h5_data(knockout_filepath, verbose=False)
+        perturbation_filepath = os.path.join(subnetwork_dir, path)
+        data = load_h5_data(perturbation_filepath, verbose=False)
         if 'parcellation' not in data:
             continue
 
-        # Get the number of units in the original subnetwork
         subnetwork_units = np.where(data['parcellation'] >= 0.5)[0]
-        all_subnetwork_units.extend(subnetwork_units)  # Collect for later
+        all_subnetwork_units.extend(subnetwork_units)
         num_units = len(subnetwork_units)
 
-        # Randomly select a new set of units with the same size
         total_units = np.arange(len(data['parcellation']))
         random_units = np.random.choice(total_units, size=num_units, replace=False)
 
-        # Create a new random knockout mask (parcellation)
         random_parcellation = np.zeros_like(data['parcellation'])
         random_parcellation[random_units] = 1
 
         new_data = dict(
             parcellation=random_parcellation,
-            coordinates=data['coordinates'],  # Use the updated coordinates for the random units
+            coordinates=data['coordinates'],
         )
 
-        # Save the new random knockout mask and updated coordinates inside the subnetwork directory
-        random_knockout_filepath = os.path.join(subnetwork_random_dir, f"random_{path}")
+        random_perturbation_filepath = os.path.join(subnetwork_random_dir, f"random_{path}")
         save_h5_data(
             new_data,
-            random_knockout_filepath,
+            random_perturbation_filepath,
             verbose=verbose,
             indent=indent
         )
 
         try:
-            # Run connectivity with the new knockout file
-            run_connectivity(
-                model_name=model_name,
-                output_dir=subnetwork_random_dir,  # Use the specific subnetwork's directory
-                knockout_filepath=random_knockout_filepath,
+            model, tokenizer = get_model_and_tokenizer(
+                model_name,
+                knockout_probs=random_parcellation,
                 knockout_thresh=0.5,
+                coordinates=data['coordinates']
+            )
+            run_connectivity(
+                model=model,
+                tokenizer=tokenizer,
+                output_dir=subnetwork_random_dir,
                 verbose=verbose,
                 indent=indent,
                 **connectivity_kwargs
@@ -921,19 +920,16 @@ def run_random_knockout(
                 else:
                     raise ValueError('Unrecognized step: %s' % step)
         finally:
-            # Delete the temporary file to free up space
-            if os.path.exists(random_knockout_filepath):
-                os.remove(random_knockout_filepath)
+            if os.path.exists(random_perturbation_filepath):
+                os.remove(random_perturbation_filepath)
 
-
-    # Random knockout of all subnetworks combined**
     if all_subnetwork_units:
-        all_subnetworks_random_dir = os.path.join(knockout_dir, 'random', 'all_subnetworks')
+        all_subnetworks_random_dir = os.path.join(perturbation_dir, 'random', 'all_subnetworks')
         if not os.path.exists(all_subnetworks_random_dir):
             os.makedirs(all_subnetworks_random_dir)
 
         total_units = np.arange(len(data['parcellation']))  
-        num_units = len(all_subnetwork_units)  # Total size of all subnetworks
+        num_units = len(all_subnetwork_units)
         random_units = np.random.choice(total_units, size=num_units, replace=False)
 
         random_parcellation = np.zeros_like(data['parcellation'])
@@ -953,11 +949,16 @@ def run_random_knockout(
         )
 
         try:
-            run_connectivity(
-                model_name=model_name,
-                output_dir=all_subnetworks_random_dir,  # Store under 'all_subnetworks'
-                knockout_filepath=all_random_filepath,
+            model, tokenizer = get_model_and_tokenizer(
+                model_name,
+                knockout_probs=random_parcellation,
                 knockout_thresh=0.5,
+                coordinates=data['coordinates']
+            )
+            run_connectivity(
+                model=model,
+                tokenizer=tokenizer,
+                output_dir=all_subnetworks_random_dir,
                 verbose=verbose,
                 indent=indent,
                 **connectivity_kwargs
@@ -977,7 +978,6 @@ def run_random_knockout(
                 os.remove(all_random_filepath)
 
 
-
 def run_sequential_knockout(
         output_dir=os.path.join(OUTPUT_DIR, 'sequential_knockout'),
         model_name='gpt2',
@@ -989,7 +989,7 @@ def run_sequential_knockout(
     if connectivity_kwargs is None:
         connectivity_kwargs = {}
 
-    knockout_dir = os.path.join(output_dir, 'knockout') 
+    knockout_dir = os.path.join(output_dir, 'knockout')
     sequential_knockout_dir = os.path.join(knockout_dir, 'sequential')
     subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
 
@@ -1016,7 +1016,7 @@ def run_sequential_knockout(
             print(f"Skipping {path}: No 'parcellation' key found")
             continue
 
-        subnetworks = data['parcellation']  
+        subnetworks = data['parcellation']
         if len(subnetworks.shape) < 2:
             print(f"Skipping {path}: Not enough dimensions")
             continue
@@ -1047,33 +1047,122 @@ def run_sequential_knockout(
             save_h5_data(new_data, temp_knockout_path, verbose=verbose, indent=indent)
             print(f"Saved knockout file: {temp_knockout_path}")
 
-           # try:
-                # Run connectivity analysis
-            run_connectivity(
-                model_name=model_name,
-                output_dir=subnetwork_folder,
-                knockout_filepath=temp_knockout_path,
-                knockout_thresh=0.5,
-                verbose=verbose,
-                indent=indent,
-                **connectivity_kwargs
-            )
+            # Now, create the perturbed model based on the knockout mask
+            try:
+                # Create the perturbed model using the knockout mask (subnetworks[:, i])
+                model, tokenizer = get_model_and_tokenizer(
+                    model_name,
+                    knockout_probs=subnetworks[:, i],
+                    knockout_thresh=0.5,
+                    coordinates=data['coordinates']
+                )
+                
+                # Run connectivity analysis on the perturbed model
+                run_connectivity(
+                    model=model,
+                    tokenizer=tokenizer,
+                    output_dir=subnetwork_folder,
+                    knockout_filepath=temp_knockout_path,
+                    knockout_thresh=0.5,
+                    verbose=verbose,
+                    indent=indent,
+                    **connectivity_kwargs
+                )
 
                 # Run the specified steps (e.g., plotting)
-            for step in steps:
-                if step == 'plot_stability':
-                    plot_stability(
-                        output_dir=subnetwork_folder,
-                        verbose=verbose,
-                        indent=indent
-                    )
-                else:
-                    raise ValueError(f'Unrecognized step: {step}')
-            #finally:
+                for step in steps:
+                    if step == 'plot_stability':
+                        plot_stability(
+                            output_dir=subnetwork_folder,
+                            verbose=verbose,
+                            indent=indent
+                        )
+                    else:
+                        raise ValueError(f'Unrecognized step: {step}')
+            finally:
                 # Delete the temporary knockout file
-                #if os.path.exists(temp_knockout_path):
-                    #os.remove(temp_knockout_path)
-                   # print(f"Deleted temp file: {temp_knockout_path}")
+                if os.path.exists(temp_knockout_path):
+                    os.remove(temp_knockout_path)
+                    print(f"Deleted temp file: {temp_knockout_path}")
 
     if verbose:
         stderr("Sequential knockout process completed.\n")
+
+
+
+
+
+
+# SAMPLE NOT READY ________________
+
+
+def run_avg_knockout(
+        output_dir=os.path.join(OUTPUT_DIR, 'avg_knockout'),
+        model_name='gpt2',
+        connectivity_kwargs=None,
+        steps=('plot_stability',),
+        verbose=True,
+        indent=0
+):
+    if connectivity_kwargs is None:
+        connectivity_kwargs = {}
+
+    knockout_dir = os.path.join(output_dir, 'knockout')
+    avg_knockout_dir = os.path.join(knockout_dir, 'avg')
+    subnetwork_dir = os.path.join(output_dir, SUBNETWORK_NAME)
+
+    if verbose:
+        stderr('Running average knockout\n')
+    indent += 2
+
+    # Create the average knockout directory if it doesn't exist
+    if not os.path.exists(avg_knockout_dir):
+        os.makedirs(avg_knockout_dir)
+
+    # Process files in the subnetwork directory
+    print(f"Checking files in {subnetwork_dir}: {os.listdir(subnetwork_dir)}")
+
+    for path in os.listdir(subnetwork_dir):
+        match = INPUT_NAME_RE.match(path)
+        if not match:
+            print(f"Skipping file (no match): {path}")
+            continue
+
+        knockout_filepath = os.path.join(subnetwork_dir, path)
+        data = load_h5_data(knockout_filepath, verbose=False)
+        if 'parcellation' not in data:
+            print(f"Skipping {path}: No 'parcellation' key found")
+            continue
+
+        subnetworks = data['parcellation']
+        if len(subnetworks.shape) < 2:
+            print(f"Skipping {path}: Not enough dimensions")
+            continue
+
+        num_subnetworks = subnetworks.shape[1]
+        print(f"Processing {path}: {num_subnetworks} subnetworks found")
+
+        for i in range(num_subnetworks):
+            # Create the subnetwork-specific directory
+            subnetwork_folder = os.path.join(avg_knockout_dir, f'subnet_{i}')
+            if not os.path.exists(subnetwork_folder):
+                os.makedirs(subnetwork_folder)
+
+            # Create subdirectories for connectivity and plots
+            connectivity_dir = os.path.join(subnetwork_folder, 'connectivity')
+            plots_dir = os.path.join(subnetwork_folder, 'plots')
+            if not os.path.exists(connectivity_dir):
+                os.makedirs(connectivity_dir)
+            if not os.path.exists(plots_dir):
+                os.makedirs(plots_dir)
+
+            # Save individual subnetwork knockout mask
+            temp_knockout_path = os.path.join(subnetwork_folder, f'avg_knockout_{path}_subnet_{i}.h5')
+            new_data = {
+                'parcellation': subnetworks[:, i],
+                'coordinates': data['coordinates']
+            }
+            save_h5_data(new_data, temp_knockout_path, verbose=verbose, indent=indent)
+            print(f"Saved knockout file: {temp_knockout_path}")
+
+            

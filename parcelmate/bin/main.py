@@ -81,7 +81,7 @@ if __name__ == '__main__':
 
     if 'all' in steps or 'random_knockout' in steps:
         print("Running Random Knockout...\n")
-        run_random_knockout(
+        run_random_perturbation(
             output_dir=cfg.get('output_dir', OUTPUT_DIR),
             connectivity_kwargs=cfg.get('connectivity', {}),
             **cfg.get('random_knockout', {})
