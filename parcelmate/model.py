@@ -862,7 +862,6 @@ def run_random_knockout(
             continue
         
         # Create a subdirectory for this specific subnetwork
-        subnetwork_name = match.group(1)  # Extract subnetwork name from the filename
         subnetwork_number = match.group(2)  # This is the correct number
         subnetwork_random_dir = os.path.join(knockout_dir, 'random', f"subnetwork_{subnetwork_number}")
         if not os.path.exists(subnetwork_random_dir):
