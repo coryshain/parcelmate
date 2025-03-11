@@ -868,7 +868,9 @@ def run_random_perturbation(
 
         subnetwork_number = match.group(2)
         subnetwork_random_dir = os.path.join(perturbation_dir, 'random', f"subnetwork_{subnetwork_number}")
-        os.makedirs(subnetwork_random_dir, exist_ok=True)
+        
+        if not os.path.exists(subnetwork_random_dir):
+            os.makedirs(subnetwork_random_dir)
 
         perturbation_filepath = os.path.join(subnetwork_dir, path)
         data = load_h5_data(perturbation_filepath, verbose=False)
@@ -913,6 +915,7 @@ def run_random_perturbation(
                 model=model,
                 tokenizer=tokenizer,
                 output_dir=subnetwork_random_dir,
+                knockout_filepath=random_perturbation_filepath,
                 verbose=verbose,
                 indent=indent,
                 **connectivity_kwargs
@@ -934,7 +937,8 @@ def run_random_perturbation(
     # Generate a random subnetwork across all subnetworks
     if all_subnetwork_units:
         all_subnetworks_random_dir = os.path.join(perturbation_dir, 'random', 'all_subnetworks')
-        os.makedirs(all_subnetworks_random_dir, exist_ok=True)
+        if not os.path.exists(all_subnetworks_random_dir):
+            os.makedirs(all_subnetworks_random_dir)
 
         num_units = len(all_subnetwork_units)
         total_units = np.arange(len(data['parcellation']))
@@ -965,6 +969,7 @@ def run_random_perturbation(
             model=model,
             tokenizer=tokenizer,
             output_dir=all_subnetworks_random_dir,
+            knockout_filepath=all_random_perturbation_filepath,
             verbose=verbose,
             indent=indent,
             **connectivity_kwargs
@@ -1003,7 +1008,8 @@ def run_sequential_knockout(
         stderr('Running sequential knockout\n')
     indent += 2
 
-    os.makedirs(sequential_knockout_dir, exist_ok=True)
+    if not os.path.exists(sequential_knockout_dir):
+        os.makedirs(sequential_knockout_dir)
 
     print(f"Checking files in {subnetwork_dir}: {os.listdir(subnetwork_dir)}")
 
@@ -1032,17 +1038,23 @@ def run_sequential_knockout(
 
         for i in range(num_subnetworks):
             subnetwork_folder = os.path.join(sequential_knockout_dir, f'subnet_{i}')
-            os.makedirs(subnetwork_folder, exist_ok=True)
+
+            if not os.path.exists(subnetwork_folder):
+                os.makedirs(subnetwork_folder)
+
             connectivity_dir = os.path.join(subnetwork_folder, 'connectivity')
             plots_dir = os.path.join(subnetwork_folder, 'plots')
-            os.makedirs(connectivity_dir, exist_ok=True)
-            os.makedirs(plots_dir, exist_ok=True)
+
+            if not os.path.exists(connectivity_dir):
+                os.makedirs(connectivity_dir)
+            if not os.path.exists(plots_dir):
+                os.makedirs(plots_dir)
 
             temp_knockout_path = os.path.join(subnetwork_folder, f'knockout_{path}_subnet_{i}.h5')
             subnetwork_units = subnetworks[:, i] == 1  # Extract units for the current subnetwork
 
             # Create knockout probabilities array (same size as number of hidden units)
-            knockout_probs = np.ones(num_hidden_units)
+            knockout_probs = np.ones((num_hidden_units, 1))
             knockout_probs[subnetwork_units] = 0  # Knockout the subnetwork (set activations to 0)
 
             # Keep the full coordinate system
@@ -1141,7 +1153,7 @@ def run_avg_knockout(
             os.makedirs(subnetwork_folder, exist_ok=True)
 
             subnetwork_units = subnetworks[:, i] == 1
-            knockout_probs = np.ones(num_hidden_units)
+            knockout_probs = np.ones((num_hidden_units, 1))
             knockout_values = np.zeros((num_hidden_units, avg_embeddings.shape[1]))
             knockout_values[subnetwork_units] = avg_embeddings[subnetwork_units]
 
